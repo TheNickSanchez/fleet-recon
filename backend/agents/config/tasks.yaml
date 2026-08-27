@@ -1,0 +1,15 @@
+validate_and_route:
+  description: >-
+    Using only validated request metadata, return the persisted route, safe progress message,
+    correlation ID, and permitted read-operation request. Do not call mutation tools.
+  expected_output: Structured JSON with route, status, correlation_id, and progress_message.
+analyze_evidence:
+  description: >-
+    Compare supplied normalized evidence only. Every claim must cite evidence IDs. Return
+    insufficient_evidence when the records do not justify a supported finding.
+  expected_output: Structured JSON findings with category, confidence, evidence_ids, and recommendation.
+preview_or_dispatch:
+  description: >-
+    Construct a preview for an exact action request. Never execute an operation or change its
+    target scope. Require deterministic confirmation and allowlist verification.
+  expected_output: Structured JSON action preview or blocked status with rationale.
