@@ -36,7 +36,9 @@ This document translates the [Fleet Recon Product Requirements Document](prd.md)
 - Durable batch jobs with bounded connector concurrency and retry-safe collection.
 - WebSocket collaboration events.
 - Preview, explicit confirmation, allowlist enforcement, idempotency, and audit records for ServiceNow ticket creation and Jamf policy triggers.
-- Basic authentication through an enterprise OIDC provider and one operational User role plus administrator claims for configuration.
+- Basic authentication through an enterprise OIDC provider with Workspace User and Administrator roles; administrator claims gate configuration.
+- Administrator Tool Management, workspace-scoped tool configuration, credential references, and connector health diagnostics.
+- A governed compatibility path for the approved `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` capabilities.
 
 **Explicitly deferred:**
 
@@ -61,6 +63,9 @@ This document translates the [Fleet Recon Product Requirements Document](prd.md)
 | Connector HTTP | Async HTTP client with per-connector rate limiter and bounded retry policy | Isolates vendor APIs and makes partial completion measurable. |
 | Model output | Structured Pydantic schemas and JSON-only task outputs | Prevents free-form recommendations from becoming executable operations. |
 | Streaming | Server-sent events for chat/run progress; WebSockets for shared canvas events | SSE is simple for one-way chat progress; WebSockets support bidirectional collaboration updates. |
+| Tool registry and configuration | PostgreSQL-backed approved tool definitions plus versioned workspace configurations; Pydantic/JSON Schema validation | Makes script capabilities discoverable and configurable without allowing arbitrary code or parameter injection. |
+| Credential storage | Enterprise secret manager referenced by opaque `CredentialReference` records | Keeps API keys and passwords out of application data, agent context, logs, and browser responses. |
+| Connector health | Read-only `validate_connection` checks with persisted health history and scheduled/on-demand execution | Gives Administrators actionable diagnostics while preventing health checks from becoming mutation or retry paths. |
 
 ## 2. Multi-Agent System Specification
 
@@ -74,9 +79,33 @@ The Application Crew is a small CrewAI crew owned by the backend orchestration l
 | Analysis Agent | Compare normalized evidence and produce source-cited discrepancies and next-step playbooks. | Least-privilege normalized evidence references and policy catalog. | `AnalysisResult`: findings, category, severity, confidence, evidence IDs, recommendation, prerequisites, approval requirement. | Evidence reader, findings store, rule catalog. No connector mutation, ticket creation, Jamf policy trigger, or unsupported conclusion. |
 | Action/Dispatch Agent | Construct and execute only an already-confirmed, allowlisted operation. | Selected work items, immutable action request, confirmation and allowlist results. | `DispatchResult`: per-target receipts, final action status, audit references. | Work-item reader, action store, confirmation verifier, allowlist verifier, schema validator, ServiceNow/Jamf adapter, audit writer. Cannot broaden target scope or execute without deterministic preconditions. |
 
-The application service remains the authority around each agent. For example, an Action/Dispatch task can return a proposed operation, but a domain service must still verify that the persisted action request is unexpired, confirmed by the requester or an authorized user, unchanged, allowlisted, and idempotency-safe before calling a connector.
+The application service remains the authority around each agent. For example, an Action/Dispatch task can return a proposed operation, but a domain service must still verify that the persisted action request is unexpired, confirmed by the requester or an authorized user, unchanged, allowlisted, and idempotency-safe before calling a connector. Tool availability is similarly deterministic: a tool must be registered, enabled for the workspace, assigned to the agent, compatible with dependency health, and invoked with a validated configuration snapshot.
 
-### 2.2 CrewAI Configuration
+### 2.2 Tool Capability Model
+
+The three supplied scripts are treated as approved capability adapters, not as unrestricted shell commands or user-uploaded code. The worker invokes a registered tool implementation through an internal Python interface and supplies an immutable `ToolExecutionContext` containing `workspace_id`, `run_id`, correlation ID, input object reference, effective tool/configuration/credential versions, and a cancellation signal. The adapter returns typed per-device evidence and safe telemetry; it does not write directly to a user-selected filesystem path or expose raw credentials.
+
+| Capability | Source and behavior | Inputs and configuration | Typed output and architecture treatment |
+| --- | --- | --- | --- |
+| `asset_report_build` | Step 1. Resolves usernames through ServiceNow `sys_user`, fetches assigned `alm_hardware`, derives platform from model/manufacturer metadata, and emits one row per device or an explicit no-device/not-found row. | Sanitized username CSV; `states` allowlist such as `In use,In stock`; `platforms` allowlist such as `macOS,Windows`; batch size remains an implementation limit. | `DeviceInventoryEvidence` with username, serial, model, manufacturer, platform, state, substate, asset tag, and safe skip reason. ServiceNow calls use the ServiceNow connector and its configured credential reference. |
+| `asset_report_mdm` | Step 2. Routes macOS rows to batched Jamf inventory (`GENERAL`, `HARDWARE`) and Windows rows to Intune serial lookup plus managed-device metadata. Preserves duplicate serial rows and marks not-found/lookup-error states explicitly. | Step 1 device evidence; `jamf_batch_size`, `intune_workers`, and max-age policy are bounded worker settings, not unrestricted user flags. | `MdmEvidence` with provider, managed/unmanaged/not-found status, last check-in, compliance, management agent, detail, source record reference, and safe error category. Jamf and Intune calls use separate connector credentials and rate limits. |
+| `asset_report_app` | Step 3. For macOS, resolves an app-specific Jamf extension attribute first and falls back to Jamf application inventory; for Windows, queries Intune managed-app states. Classifies raw status as healthy/unhealthy/unknown and preserves provenance. | Step 1 device evidence; required `app` value; approved per-app signal-map rule; bounded Jamf batch size and Intune worker count. Signal-map rules are versioned configuration, not arbitrary executable logic. | `ApplicationEvidence` with app, raw status, health classification, source, versions/detail, and safe error category. EA ambiguity and fallback source are explicit evidence metadata. |
+
+The scripts currently use CLI arguments, environment variables, `requests`, `pandas`, `PyYAML`, and a shared `fleet_common` module, and they print progress plus optional JSONL summaries. In the product, CLI parsing becomes schema-backed tool configuration; `fleet_common` behavior becomes shared connector/normalization services; progress becomes persisted run events; JSONL summaries become structured metrics; and CSV writes become database/object-store evidence persistence. A temporary worker adapter may preserve the scripts' sequential step ordering during migration, but each step must be independently retryable and checkpointed by `(run_id, subject/device, tool, configuration_version)`.
+
+### 2.3 Script Pipeline and Execution Controls
+
+For a batch run, the worker executes the capabilities as a dependency graph rather than one opaque process:
+
+1. `asset_report_build` consumes the immutable sanitized input CSV and produces the canonical device set. Its ServiceNow state and platform filters are captured in the workspace configuration snapshot.
+2. `asset_report_mdm` consumes only eligible device rows and fans out by platform. Jamf inventory remains batched (default 40, with a lower configured ceiling for API responses that reject larger requests); Intune remains per-device with a bounded concurrency limit (current script default 10).
+3. `asset_report_app` consumes the same device set and an approved app configuration. It runs Jamf extension-attribute resolution before application-inventory fallback and uses Intune managed-app state priority `installed`, `failed`, `notApplicable`, `unknown`.
+4. Normalization persists evidence after each successful subject/source operation. A step failure produces safe per-source error evidence and allows independent platform/source work to continue when dependency policy permits.
+5. Analysis runs after the required evidence steps reach a terminal state, including partial completion. A run records step status, counts, API call telemetry, duration, and the exact tool/configuration versions.
+
+The worker must not inherit arbitrary environment values from a user request. Connector sessions resolve credentials from the workspace's active opaque credential reference, and all HTTP calls use connector-owned timeouts, rate limits, bounded retries, and redacted exceptions. Report freshness warnings (`max_age_hours`) are represented as evidence/run warnings, not as a bypass of stale-data policy. Human-readable stdout from the legacy scripts is not an API contract.
+
+### 2.4 CrewAI Configuration
 
 The implementation must keep agent and task configuration in version-controlled YAML, with secrets and model credentials supplied through environment variables.
 
@@ -104,7 +133,7 @@ crew:
 
 The YAML is configuration, not an authorization policy. Tool registration is performed in Python from explicit allowlists, and mutation tools are unavailable to the Orchestrator and Analysis agents.
 
-### 2.3 Task and Turn Orchestration
+### 2.5 Task and Turn Orchestration
 
 #### Micro-query
 
@@ -129,7 +158,7 @@ The YAML is configuration, not an authorization policy. Tool registration is per
 
 The canvas creates an `ActionRequest` preview from selected work items. The Action/Dispatch Agent may validate and summarize the preview, but execution is a separate command. The command performs schema validation, checks current work-item versions and exact target IDs, verifies confirmation expiration and allowlist policy, acquires the idempotency key, calls exactly one permitted connector operation, persists receipts, and emits audit events.
 
-### 2.4 Context and Output Contracts
+### 2.6 Context and Output Contracts
 
 Agent context contains IDs and normalized fields only:
 
@@ -139,7 +168,7 @@ Agent context contains IDs and normalized fields only:
 
 All task outputs use Pydantic schemas. Invalid output is rejected, logged with a redacted validation error, and retried once with a correction instruction. A second failure marks the task failed and preserves the run's successful evidence.
 
-### 2.5 Error Handling, Retry, Cancellation, and Budgets
+### 2.7 Error Handling, Retry, Cancellation, and Budgets
 
 - Connector retries use bounded exponential backoff, connector-specific rate limits, and only retry operations marked `retry_safe`.
 - A single connector timeout or error creates source-specific error evidence and does not cancel other connectors.
@@ -175,6 +204,8 @@ frontend/src/
 ```
 
 The MVP has one authenticated workspace route, for example `/workspaces/:workspaceId`, with deep-linkable run and work-item selections. Configuration screens are hidden unless the authenticated identity carries the designated administrator claim.
+
+Administrator Settings adds workspace-scoped `/workspaces/:workspaceId/settings/tools`, `/settings/credentials`, and `/settings/health` views. Tool rows show name, purpose, integration, version, lifecycle, effective enabled state, assigned agents, parameter summary, and last validation result. Tool configuration uses generated controls from the typed schema; it provides inline validation, a proposed diff, explicit save confirmation for scope changes, and a visible configuration version. Credential forms support create/rotate/deactivate and alias/status metadata, but render secret inputs only for new values. Health rows show the diagnostic state, checked-at time, credential version, latency, and redacted remediation text. Settings data is fetched only after the server authorizes the Administrator claim; hiding a route in the client is not an authorization control.
 
 ### 3.3 Interface Requirements
 
@@ -214,7 +245,8 @@ backend/
   api/                 # FastAPI routers, auth dependencies, error handlers
   domain/              # routing, validation, concurrency, action policy
   agents/              # CrewAI crew, YAML config, structured task adapters
-  connectors/          # shared contract and five read adapters plus two action adapters
+  tools/               # approved capability registry, schemas, adapters, and execution snapshots
+  connectors/          # shared contract, five read adapters, two action adapters, and health checks
   jobs/                # queue definitions, batch worker, checkpoints
   persistence/         # SQLAlchemy models, repositories, migrations
   events/              # persisted events, Redis publisher, WebSocket manager
@@ -254,6 +286,12 @@ Representative endpoints:
 | `POST /api/v1/workspaces/{workspace_id}/action-requests/{id}/execute` | Execute after deterministic confirmation and allowlist checks. |
 | `GET /api/v1/workspaces/{workspace_id}/export` | Generate a filtered CSV export with policy checks. |
 | `GET /api/v1/workspaces/{workspace_id}/events` | WebSocket connection for persisted workspace updates. |
+| `GET /api/v1/workspaces/{workspace_id}/admin/tools` | Administrator-only catalog with effective workspace configuration and schemas. |
+| `PATCH /api/v1/workspaces/{workspace_id}/admin/tools/{tool_id}` | Administrator-only enable/disable, agent assignment, or validated parameter configuration; returns a new configuration version. |
+| `GET /api/v1/workspaces/{workspace_id}/admin/credentials` | Administrator-only integration aliases, lifecycle metadata, and current health summary; never secret values. |
+| `PUT /api/v1/workspaces/{workspace_id}/admin/credentials/{integration}` | Administrator-only create/rotate/deactivate credential through the secret manager using optimistic concurrency. |
+| `POST /api/v1/workspaces/{workspace_id}/admin/health/{integration}/test` | Administrator-only read-only connection test for the active or specified pending credential version. |
+| `GET /api/v1/workspaces/{workspace_id}/admin/health` | Administrator-only current health rows and safe diagnostic history. |
 | `GET /api/v1/health` | Liveness; does not expose connector secrets or payloads. |
 | `GET /api/v1/ready` | Readiness for database, Redis, and worker dependencies. |
 
@@ -293,6 +331,7 @@ WebSocket events use the same envelope and are authorized to one workspace. Clie
 - CSV validation enforces configurable maximum bytes and rows, UTF-8 with explicit handling for approved encodings, required username column mapping, allowed MIME/type policy, and an upload malware-scan hook when required by the enterprise service.
 - API rate limits apply per authenticated actor and workspace; run creation, upload, export, and action execution have separate limits.
 - Every workspace query includes workspace authorization. Administrator-only configuration checks an explicit identity claim and never relies on a frontend-only guard.
+- Tool execution authorization evaluates tool registry state, workspace enablement, agent assignment, actor role, dependency health policy, and validated parameters in one server-side policy service. Admin endpoints use deny-by-default authorization and optimistic version checks.
 - Mutations require authenticated actor, workspace, correlation ID, entity version where applicable, and server timestamp.
 
 ### 4.4 Data Architecture
@@ -311,10 +350,13 @@ Core tables map directly to the PRD entities:
 - `action_request` and `action_receipt`
 - `audit_event`
 - `workspace_membership`, `connector_config_metadata`, and `action_allowlist`
+- `tool_definition`, `workspace_tool_config`, `tool_execution_snapshot`, `credential_reference`, and `connection_health_check`
 
 Sensitive or large values are references, not inline application data: raw connector responses remain in an approved retention store or vendor reference, and sanitized input CSVs are stored in a private bucket. The normalized JSON supplied to the Analysis Agent is stored with a schema version and redaction policy version.
 
 `canvas_work_item.version` and `note.version` are incremented in the same transaction as their mutation. An update with a stale `expected_version` returns `409 CONFLICT` and includes the current safe representation.
+
+`workspace_tool_config.version` and `credential_reference.version` are incremented transactionally with their audit event. A `tool_execution_snapshot` is created when a run starts and contains effective tool versions, parameter values after secret-marker redaction, workspace configuration versions, credential versions, and dependency health decisions. The snapshot contains references, never secret material. Tool registry entries are immutable by version; retiring a version prevents new runs while preserving historical reconstruction.
 
 ### 4.5 Runtime Integration Layer
 
@@ -334,11 +376,13 @@ class Connector(Protocol):
 
 The five read adapters are ServiceNow, Cortex XDR, Jamf Pro, Microsoft Intune, and Tenable. The two write adapters are allowlisted ServiceNow ticket creation and Jamf policy trigger. Write adapters are never registered in read or analysis tool sets.
 
+The legacy report scripts are adapted behind this contract rather than imported into request handlers. `asset_report_build` uses the ServiceNow adapter's user and hardware operations; `asset_report_mdm` uses Jamf inventory and Intune managed-device operations; and `asset_report_app` uses Jamf extension-attribute/application inventory and Intune managed-app operations. Each adapter emits typed evidence and safe error categories. The worker may execute the existing scripts in a compatibility mode during migration only when it controls the input/output object references, environment, timeout, and process identity; arbitrary command, path, or environment injection from chat is prohibited.
+
 Prompt and task traces record crew name, task name, model identifier, token counts, duration, validation result, and correlation ID. They exclude prompts containing secrets, raw payloads, upload data, and unredacted endpoint identifiers beyond approved policy.
 
 ### 4.6 Authentication and Secrets
 
-Use enterprise OIDC for browser authentication and short-lived access tokens for the API. The MVP maps an authenticated user to one workspace User role; an administrator claim gates connector metadata and action-allowlist configuration.
+Use enterprise OIDC for browser authentication and short-lived access tokens for the API. The MVP maps an authenticated user to Workspace User or Administrator; an administrator claim gates tool registry/configuration views, connector credential metadata, health diagnostics, and action-allowlist configuration. Secret-manager access is performed by the backend worker/API using a service identity scoped to the target workspace and integration; CrewAI agents receive connector handles, not secret values.
 
 Environment variable names are defined in `.env.example` during setup, including:
 
@@ -475,15 +519,16 @@ Horizontal event infrastructure, partitioned evidence storage, read replicas, an
 | Unauthorized mutation | Separate write adapters, administrator allowlist, exact-scope action request, explicit confirmation, expiration, and idempotency. |
 | Input injection or unsafe CSV | Pydantic validation, control-character stripping, size/row/type checks, encoding policy, malware-scan hook, and safe output escaping. |
 | Stale overwrite | Transactional optimistic version checks and `409 CONFLICT` responses. |
-| Replay or duplicate action | Unique idempotency key with atomic claim and durable receipt. |
 | LLM hallucination or prompt injection from source data | `redact_for_model`, least-privilege normalized JSON, structured outputs, evidence citation requirement, and no model authority over policy checks. |
 | Sensitive export leakage | Authorization, active-filter policy evaluation, safe fields only, export audit event, private object storage, and retention policy. |
+
+Tool execution authorization evaluates tool registry state, workspace enablement, agent assignment, actor role, dependency health policy, and validated parameters in one server-side policy service. Admin endpoints use deny-by-default authorization and optimistic version checks.
 
 All traffic uses TLS. Database, Redis, and object storage use encryption at rest supplied by the hosting platform. Connector credentials use least-privilege scopes and are rotated outside the application. Audit events are append-only at the application boundary and protected from ordinary User edits.
 
 ### 8.2 Authentication and Authorization
 
-The identity provider is OIDC. The API validates issuer, audience, signature, expiry, and workspace membership. The MVP User role may investigate, view, export, collaborate, request, and confirm actions. Only the designated administrator may manage connector metadata, credentials, and action allowlists. The backend, not the UI, enforces this distinction.
+The identity provider is OIDC. The API validates issuer, audience, signature, expiry, and workspace membership. The MVP maps an authenticated user to Workspace User or Administrator; an administrator claim gates tool registry/configuration views, connector credential metadata, health diagnostics, and action-allowlist configuration. Secret-manager access is performed by the backend worker/API using a service identity scoped to the target workspace and integration; CrewAI agents receive connector handles, not secret values.
 
 ### 8.3 Compliance and Retention
 
@@ -497,7 +542,11 @@ Data residency, audit retention duration, endpoint identifier classification, ve
 - Routing threshold: five unique users without CSV is micro-query; six is batch; every CSV is batch; invalid input is rejected without connector calls.
 - CSV size, row, MIME/type, encoding, required-column, and upload-scan-hook behavior.
 - Connector normalization and redaction for each adapter.
+- `asset_report_build` username-column detection, normalization, ServiceNow state/platform filtering, one-row-per-device behavior, placeholder serial handling, and explicit no-device/not-found output.
+- `asset_report_mdm` duplicate-serial preservation, Jamf batch-size behavior, platform dispatch, Intune bounded concurrency, last-check-in mapping, and partial lookup errors.
+- `asset_report_app` extension-attribute precedence, ambiguity/fallback behavior, per-app signal-map classification, Intune state priority, and source provenance.
 - Partial-failure aggregation and retry-safe checkpointing.
+- Tool registry enablement/assignment/parameter authorization, immutable execution snapshots, credential rotation redaction, and connection-health state mapping.
 - CrewAI structured output validation and prohibited-tool registration.
 - Action confirmation, expiration, allowlist, exact scope, idempotency, and low-confidence gating.
 - Optimistic concurrency and note revision behavior.
@@ -518,6 +567,9 @@ Use vendor sandbox or deterministic fixtures to verify the shared connector cont
 7. An unconfirmed, expired, changed-scope, or unallowlisted action never reaches a write connector.
 8. A confirmed action produces per-target receipts and append-only audit events.
 9. An export respects active filters and includes generation and source timestamps.
+10. The three report capabilities execute in order against deterministic fixtures, persist typed evidence after each step, preserve explicit skip/error states, and do not write secrets or arbitrary paths.
+11. Workspace Users are denied all administrator tool, credential, and health APIs; Administrators can update configuration and observe redacted health results.
+12. A credential rotation and tool-configuration change affect new runs only, while an active run continues using its persisted execution snapshot.
 
 ### 9.4 Runtime-Specific Quality Gates
 
@@ -586,6 +638,7 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - [AAMAD configuration](../../aamad.config.yml).
 - [AAMAD SAD template](../../.cursor/templates/sad-template.md).
 - [AAMAD agent framework overview](../../AGENTS.md).
+- Reviewed capability sources: `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_build.py`, `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_mdm.py`, and `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_app.py`.
 
 ## Assumptions
 
@@ -593,6 +646,7 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - CrewAI is used as an orchestration runtime, not as a security or authorization boundary.
 - PostgreSQL, Redis, and private object storage are available as managed or containerized pilot dependencies.
 - The enterprise provides an OIDC identity provider and approved non-production connector credentials.
+- The three supplied report scripts are approved starting implementations; their current CLI/CSV behavior is compatibility input to the typed tool adapters, not a permanent public API.
 - Vendor API permissions and exact field mappings are finalized during the Build integration phase.
 - A single workspace can contain multiple authenticated collaborators, while the MVP remains single-tenant per deployment.
 
@@ -610,3 +664,4 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 ## Audit
 
 - 2026-08-27 | `system-arch` | `create-sad` | Resolved `AAMAD_TARGET_RUNTIME=crewai` from `aamad.config.yml`; created the MVP Solution Architecture Document from the Fleet Recon PRD, MRD, and SAD template.
+- 2026-08-27 | `system-arch` | `update-sad` | Incorporated updated PRD administrator requirements and reviewed the three report scripts; defined governed capability adapters, pipeline execution, configuration/credential APIs, health diagnostics, RBAC enforcement, and versioned run snapshots.

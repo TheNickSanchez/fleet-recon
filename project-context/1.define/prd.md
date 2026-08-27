@@ -6,9 +6,12 @@ This PRD defines the MVP of Fleet Recon: a collaborative endpoint reconciliation
 
 ## 2. Users and Permissions
 
-The MVP has one **User** role. Users can run queries, view and export results, update shared canvas state, add notes, assign work, and request or confirm a scoped remediation action.
+The MVP has two permission roles:
 
-Configuration is not a role in the MVP: only the designated administrator manages connectors, credentials, and action allowlists. All mutations must capture the authenticated actor, workspace, timestamp, entity version, and correlation ID.
+- **Workspace User:** can run queries, trigger tools authorized for the current workspace during a query, view and export permitted results, update shared canvas state, add notes, assign work, and request or confirm a scoped remediation action. A Workspace User cannot view, edit, or configure tool definitions, tool parameters, tool assignments, credentials, or connection diagnostics.
+- **Administrator:** can perform all Workspace User activities and manage the tool catalog, workspace tool enablement, agent assignments, validated tool parameters, service credentials, connection tests, and action allowlists for authorized workspaces. Administrator access must be granted through the enterprise identity provider and checked server-side on every configuration request.
+
+Tool execution is always limited by the intersection of the tool's global definition, workspace enablement, agent assignment, user authorization, parameter schema, and any action allowlist. A user may invoke an authorized tool through a query without receiving access to its implementation, credentials, or hidden configuration. All configuration and credential mutations must capture the authenticated actor, workspace, timestamp, entity version, and correlation ID.
 
 ## 3. MVP Experience
 
@@ -17,11 +20,23 @@ Configuration is not a role in the MVP: only the designated administrator manage
 The desktop-first application has two independently scrollable panels:
 
 - **Copilot Chat, left:** accepts natural-language requests, pasted usernames, and CSV uploads; renders lightweight result cards, run status, errors, and action-confirmation prompts. A `+` menu exposes CSV upload and permitted integration actions; connector configuration is restricted to the designated administrator.
+- **Administrator Settings:** visible only to Administrators; provides Tool Management and Credential Management views with workspace scope, save/test status, validation errors, and audit-safe activity history. Secret values are write-only after initial submission and are never rendered in the browser.
 - **Live Canvas Dashboard, right:** displays shared filter controls, a user table, a device/evidence table or drill-down, assignment and note state, CMDB cleanup status, run activity, and CSV export.
 
 The dashboard must remain useful without the chat pane: it renders persisted results and lets authorized users update work state. Chat commands and canvas actions must refer to the same server-side entities.
 
 ### 3.2 Primary User Flows
+
+#### Configure Tools and Credentials (Administrator)
+
+1. An Administrator opens Settings and selects a workspace.
+2. Tool Management lists every registered Python tool, including display name, purpose, version, source integration, assigned agents, workspace state, and last validation time. The examples `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` are represented as registered capabilities rather than arbitrary executable file paths.
+3. The Administrator enables or disables a tool for that workspace, assigns it to one or more permitted agents, and edits only parameters exposed by the tool's typed schema, such as ServiceNow state filters or platform allowlists.
+4. The UI validates parameter types, allowed values, required fields, and safe bounds before save; it shows a proposed configuration diff and requires confirmation for changes that affect execution scope.
+5. The Administrator opens Credential Management, selects an integration, enters or rotates its API credentials, and saves. The service validates the credential format, stores it in the approved secret manager, and does not persist plaintext in application data.
+6. The Administrator runs a connection test or observes the scheduled health result. The UI displays the current diagnostic state, timestamp, latency when available, and a redacted actionable error; it never displays a token, secret, or authorization header.
+
+Configuration changes apply only to new runs unless an active run explicitly supports a versioned configuration snapshot. Existing runs retain the tool and parameter versions used at start time.
 
 #### Investigate a Small Set
 
@@ -128,6 +143,32 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 - Jamf policies and ServiceNow ticket creation are the only action integrations in MVP, controlled by an administrator-maintained allowlist.
 - Cancellations, expirations, execution receipts, and failures are durable audit events. Retrying a failed action requires a new confirmed request.
 
+### FR-7: Administrator Tool Management and Extensibility
+
+- The system maintains a versioned registry of approved Python tools/scripts. Each registry entry includes a stable tool ID, display name, purpose, owning integration, version, implementation reference, input/output schema, permitted agents, read-only or state-changing classification, and lifecycle status.
+- The initial registry must support the capabilities represented by `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` without exposing arbitrary filesystem execution or allowing an administrator to upload unreviewed code through the product UI.
+- An Administrator can view all registered tools, enable or disable each tool per workspace, and assign each enabled tool to one or more agents. Disabled tools and tools not assigned to the invoking agent cannot be selected or executed.
+- Tool assignment and enablement are workspace-scoped, versioned, auditable, and server-enforced. The UI must show effective status, assignment, version, and last validation result.
+- An Administrator can edit only schema-declared configuration parameters. The UI must support typed values, defaults, descriptions, allowed values, safe bounds, and sensitive-parameter markers; examples include ServiceNow state filters and platform allowlists.
+- Saving configuration validates the complete parameter set, displays validation errors inline, records a configuration version, and applies it to new runs. Each run stores an immutable snapshot of effective tool versions and parameters.
+- A Workspace User can trigger an enabled and assigned tool through an eligible query, but cannot discover hidden parameters, read implementation details, or override administrator configuration and authorization boundaries.
+
+### FR-8: Administrator Credential Vault
+
+- Credential Management must provide an Administrator-only entry and rotation flow for ServiceNow, Jamf Pro, Microsoft Intune, Cortex XDR, and Tenable.
+- Each integration supports the credential fields required by its connector contract, validation of required format, replace/rotate, deactivate, and revocation status. The UI must identify the integration and credential alias without displaying stored secret values.
+- Credentials are stored only through the approved secret manager, referenced by an opaque secret ID, and excluded from logs, agent context, browser responses, exports, and general application database records.
+- Credential updates use optimistic concurrency, show the last successful update actor/time and current lifecycle state, and require re-authentication or equivalent step-up authentication when enterprise policy requires it.
+- A credential may be saved without being activated until its connection test succeeds, unless an Administrator explicitly confirms activation after a diagnostic failure. Existing runs use their recorded credential/configuration snapshot; new runs use the active credential version.
+
+### FR-9: Connection Health and Diagnostics
+
+- Credential Management displays one health row per supported integration with current state, checked-at time, credential version, response latency when available, and a redacted diagnostic message.
+- The minimum states are `Not Configured`, `Connected`, `Authentication Failed`, `Rate Limited`, `Unavailable`, `Configuration Invalid`, and `Unknown`.
+- Administrators can run an on-demand least-privilege connection test and the system must also support scheduled health checks. A test must identify the integration and credential version used, never execute a state-changing operation, and persist its result with a correlation ID.
+- Diagnostic transitions are visible to Administrators and recorded as audit events. Workspace Users may see only a generic integration availability signal needed to explain a query failure and must not see credential details or unrestricted diagnostic payloads.
+- A failed health check must not silently enable a tool or cause retries that exceed the connector's rate limit. Query routing must surface unavailable integrations as partial or blocked according to the tool's declared dependency policy.
+
 ## 5. Data and State Model
 
 | Entity | Required Fields | Notes |
@@ -141,6 +182,10 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 | CanvasWorkItem | `id`, `device_id`, `finding_id`, `checked`, `assignee_id`, `cmdb_cleanup_state`, `version` | Shared mutable canvas state. |
 | Note | `id`, `work_item_id`, `author_id`, `body`, timestamps, `version` | Revisioned user commentary. |
 | ActionRequest | `id`, `work_item_ids`, `operation`, `connector`, `parameters`, `status`, `requester_id`, `confirmed_at`, `idempotency_key`, timestamps | Confirmation and execution boundary. |
+| ToolDefinition | `id`, `name`, `version`, `integration`, `implementation_ref`, `input_schema`, `output_schema`, `agent_allowlist`, `mutability`, `lifecycle_state` | Approved Python capability registry; implementation reference is not executable user input. |
+| WorkspaceToolConfig | `id`, `workspace_id`, `tool_id`, `enabled`, `assigned_agents`, `parameters_json`, `version`, `updated_by`, timestamps | Workspace-scoped enablement, assignment, and validated parameters. |
+| CredentialReference | `id`, `workspace_id`, `integration`, `secret_manager_ref`, `version`, `state`, `updated_by`, timestamps | Opaque reference and lifecycle metadata only; no plaintext secret. |
+| ConnectionHealthCheck | `id`, `workspace_id`, `integration`, `credential_version`, `state`, `latency_ms`, `redacted_message`, `correlation_id`, `checked_at` | Diagnostic history and current integration health. |
 | AuditEvent | `id`, `entity_type`, `entity_id`, `actor_id`, `event_type`, `before_json`, `after_json`, `correlation_id`, timestamp | Append-only event history. |
 
 `cmdb_cleanup_state` values: `not_needed`, `needs_review`, `ticket_requested`, `in_progress`, `resolved`, `not_actionable`.
@@ -183,10 +228,76 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 - **Performance:** micro-query chat feedback begins after the first available connector response; batch workload is parallelized within per-connector rate limits and reports progress without model polling loops.
 - **Reliability:** jobs are retryable at safe boundaries, connector calls use bounded retry/backoff, and idempotency protects state-changing operations.
 - **Observability:** structured logs, metrics, traces, correlation IDs, connector health, job queue depth, routing counts, and action outcomes are required.
+- **Configuration and secrets:** authorization checks are server-side and deny by default; tool definitions and workspace configurations are versioned; secret-manager access is least privilege; secrets and diagnostic payloads are redacted from logs, agent prompts, browser responses, exports, and audit event values.
 - **Accessibility:** keyboard-accessible core table and action controls, status announcements, and contrast-compliant state indicators.
 - **Testing:** unit tests cover sanitization, routing threshold, normalization, administrator configuration restrictions, confirmation checks, concurrency behavior, and CSV export; integration tests cover each connector contract plus the confirmed action path.
 
-## 8. MVP Acceptance Criteria
+## 8. Prioritized Product User Stories and Acceptance Criteria
+
+### P0: Protect Enterprise Access and Enable Core Administration
+
+**US-1: Manage integration credentials**
+
+As an Administrator, I want to enter, rotate, deactivate, and test credentials for each supported enterprise integration so that Fleet Recon can collect evidence without exposing secrets.
+
+- **AC-1.1:** The Credential Management view is inaccessible to a Workspace User by both navigation and direct API request; the API returns a denial without revealing credential metadata beyond the permitted generic response.
+- **AC-1.2:** An Administrator can save a credential for ServiceNow, Jamf Pro, Microsoft Intune, Cortex XDR, or Tenable, and the application stores only an opaque secret-manager reference.
+- **AC-1.3:** The UI never renders an existing secret, and automated logs, agent inputs, exports, and audit values contain no secret or authorization header.
+- **AC-1.4:** Rotation creates a new credential version, records actor/time, and does not change the credential snapshot of an existing run.
+
+**US-2: Diagnose integration connectivity**
+
+As an Administrator, I want live and on-demand connection health for each integration so that I can correct access problems before users run investigations.
+
+- **AC-2.1:** Each supported integration displays one of the defined diagnostic states, checked-at time, and a redacted message.
+- **AC-2.2:** A connection test is read-only, records the credential version and correlation ID, and distinguishes at least Connected, Authentication Failed, Rate Limited, and Unavailable.
+- **AC-2.3:** A Workspace User receives only the generic availability information needed to understand a blocked or partial query.
+
+**US-3: Enforce role boundaries**
+
+As a security owner, I want tool and credential administration enforced separately from query execution so that standard users can use approved capabilities without controlling them.
+
+- **AC-3.1:** A Workspace User can trigger an enabled, assigned tool during a query but cannot enable, disable, assign, parameterize, or inspect its hidden configuration.
+- **AC-3.2:** Every tool, configuration, credential, and diagnostic mutation is denied unless the authenticated actor has the Administrator claim for the target workspace.
+- **AC-3.3:** Every permitted mutation produces an append-only audit event with actor, workspace, version, timestamp, and correlation ID.
+
+### P1: Govern Tool Extensibility
+
+**US-4: Control tools per workspace**
+
+As an Administrator, I want to view the approved Python tool catalog and toggle tools per workspace so that each workspace exposes only the capabilities it needs.
+
+- **AC-4.1:** The catalog lists tool name, purpose, integration, version, lifecycle state, assigned agents, workspace enabled state, and last validation result.
+- **AC-4.2:** Disabling a tool prevents new invocations in that workspace; an active run remains governed by its immutable start-time snapshot and is not silently reconfigured.
+- **AC-4.3:** The system represents `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` as approved registered capabilities and does not permit arbitrary path execution from the UI.
+
+**US-5: Configure safe tool parameters**
+
+As an Administrator, I want to adjust supported tool flags such as ServiceNow state filters and platform allowlists so that investigations match workspace policy.
+
+- **AC-5.1:** The UI renders only typed, schema-declared parameters with defaults, allowed values, descriptions, and safe bounds.
+- **AC-5.2:** Invalid, out-of-range, or unauthorized values cannot be saved or passed to an agent.
+- **AC-5.3:** A saved configuration receives a version, shows the effective diff before confirmation, records an audit event, and applies to new runs only.
+
+### P2: Improve User Visibility and Operations
+
+**US-6: Use authorized tools in a query**
+
+As a Workspace User, I want the system to select the tools authorized for my workspace and agent so that I can investigate endpoints without managing integration configuration.
+
+- **AC-6.1:** Tool selection is constrained by workspace enablement, agent assignment, user authorization, dependency health, and the tool schema.
+- **AC-6.2:** The query result identifies the capability used and its configuration version without exposing credentials or hidden implementation details.
+- **AC-6.3:** A disabled, unassigned, unhealthy, or unauthorized dependency yields a safe explanation and follows the declared blocked/partial-result policy.
+
+**US-7: Preserve configuration traceability**
+
+As an auditor, I want each run and administrative change tied to exact versions so that results and access decisions can be reconstructed.
+
+- **AC-7.1:** Every run persists effective tool versions, workspace configuration versions, credential versions, and correlation ID.
+- **AC-7.2:** Audit history distinguishes tool enablement, assignment, parameter change, credential lifecycle change, and health-state transition.
+- **AC-7.3:** Audit records redact secrets and support actor/time/workspace filtering for authorized administrators.
+
+## 9. MVP Acceptance Criteria
 
 1. A request with five unique valid usernames routes to micro-query; one with six routes to batch after normalization.
 2. A CSV upload routes to batch regardless of row count and produces an internal sanitized CSV reference.
@@ -196,6 +307,10 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 6. The analysis result cites source-evidence IDs and labels insufficient evidence.
 7. A Jamf policy or ServiceNow ticket operation cannot execute without a matching confirmed, unexpired action request and audit record.
 8. An export reflects active filters and workspace data policy.
+9. An Administrator can enable/disable and agent-assign a registered tool per workspace, while a Workspace User cannot perform those operations through UI or API.
+10. An Administrator can save and rotate each supported integration credential through the secret manager; no plaintext secret appears in persisted application records, logs, agent context, browser responses, exports, or audit events.
+11. The health dashboard distinguishes Connected, Authentication Failed, Rate Limited, and Unavailable for each integration and records the credential version and correlation ID used by each test.
+12. A new run retains the exact tool, parameter, workspace configuration, and credential versions that were effective when it started.
 
 ## Sources
 
@@ -218,3 +333,4 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 ## Audit
 
 - 2026-08-26 | product-mgr | Created PRD from supplied specifications; selected runtime recorded as CrewAI from project configuration.
+- 2026-08-27 | product-mgr | Added administrator tool management and extensibility, credential vault and diagnostics, explicit RBAC boundaries, prioritized user stories, and acceptance criteria.
