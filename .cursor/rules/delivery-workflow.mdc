@@ -1,0 +1,48 @@
+---
+description: Phase 3 Deliver workflow for packaging, deployment config, CI scaffolding, and access control
+alwaysApply: true
+---
+
+# AAMAD Delivery Workflow (Phase 3: Deliver)
+
+## Purpose
+- Operationalize the validated MVP after Build-phase artifacts are complete.
+- Govern the DevOps Engineer persona (`@devops.eng`) and the single deliver artifact `project-context/3.deliver/deploy.md`.
+
+## Phase Gate
+- Do not start Deliver work until `project-context/2.build/qa.md` exists and documents MVP verification results (pass or explicitly scoped known gaps).
+- Prefer `project-context/2.build/security.md` from `@security.eng` before Deliver. If security.md is missing, continue only when the operator accepts the gap and record it under deploy.md Assumptions (required when `aamad.config.yml` sets `security.require_security_assessment: true`).
+- Required inputs: qa.md, backend.md, frontend.md, integration.md, PRD, and SAD (including DevOps and Deployment Architecture). Optional but recommended: security.md.
+- On missing prerequisites, halt and write a Diagnostic section in deploy.md with blockers and safe retry steps.
+
+## Deliver Module Structure
+Execute delivery in focused steps with fresh context when possible:
+
+1. **Release readiness** — QA (and security) gate check and release notes (`*prepare-release`).
+2. **Deploy definition** — Runtime-aligned container or platform config (`*define-deploy`).
+3. **CI scaffolding** — Minimal lint/test/build pipeline config only (`*configure-cicd`).
+4. **Runbook** — Hosting, env matrix, access control, rollback (`*document-deploy`).
+5. **User documentation** — Installation guide and user manual (`*document-user-guide` → `user-guide.md`).
+
+## Continuous Deployment Policy
+- Generate CI/CD configuration files only; do not trigger live deploys without explicit operator authorization.
+- Pipelines must run lint, test, and build stages appropriate to the stack defined in setup.md and backend.md.
+- Document manual promotion steps and rollback procedure in deploy.md.
+
+## Hosting Environment
+- Follow SAD DevOps and Deployment Architecture; default to the smallest MVP-appropriate target (single service or compose stack).
+- Align runtime image and start command with `AAMAD_TARGET_RUNTIME` and the active adapter rule.
+- Record assumed hosting target, ports, and health-check endpoints in deploy.md Assumptions.
+
+## Access Control
+- Document required secrets as environment variable names only (from `.env.example`); never write secret values in artifacts or committed config.
+- Describe least-privilege access for runtime API keys, deployment credentials, and chat endpoints at a policy level.
+- Defer enterprise IAM, SSO, and network segmentation to Future Work unless explicitly scoped in PRD/SAD.
+
+## Artifact Contract
+- Primary output: `project-context/3.deliver/deploy.md` with headings aligned to project templates where applicable.
+- End deploy.md with Sources, Assumptions, Open Questions, and Audit (persona id, action, timestamp, resolved runtime).
+
+## Failure Policy
+- Halt on missing QA gate, unresolved runtime adapter, or requests to modify application logic during deliver.
+- On operator-denied deploy authorization, complete config and runbook only and state deployment status in Open Questions.
