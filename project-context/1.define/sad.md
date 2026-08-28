@@ -2,7 +2,7 @@
 
 ## Context
 
-This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture. Fleet Recon is the endpoint reconciliation workspace described by the PRD. The phrase "recruitment assistant" in the request is treated as a naming mismatch; the attached product requirements remain the engineering source of truth.
+This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture. Fleet Recon is the endpoint reconciliation workspace described by the PRD, which remains the engineering source of truth.
 
 **Selected runtime:** `crewai`
 
@@ -642,7 +642,7 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 
 ## Assumptions
 
-- The attached PRD is authoritative for the product domain, despite the request referring to a recruitment assistant.
+- The attached PRD is authoritative for the product domain.
 - CrewAI is used as an orchestration runtime, not as a security or authorization boundary.
 - PostgreSQL, Redis, and private object storage are available as managed or containerized pilot dependencies.
 - The enterprise provides an OIDC identity provider and approved non-production connector credentials.

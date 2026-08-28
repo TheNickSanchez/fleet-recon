@@ -1,0 +1,131 @@
+.composer-dock {
+  flex: none;
+  padding: var(--s-3) var(--s-6) var(--s-4);
+  background: linear-gradient(to top, var(--bg-app) 72%, transparent);
+}
+
+.composer {
+  position: relative;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-md);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-ring);
+}
+.composer.is-dragging {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.composer__input {
+  display: block;
+  width: 100%;
+  padding: var(--s-4) var(--s-4) var(--s-2);
+  border: 0;
+  background: transparent;
+  outline: none;
+  resize: none;
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  color: var(--fg-primary);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.composer__input::placeholder {
+  color: var(--fg-quaternary);
+}
+
+.composer__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.composer__plus {
+  border-radius: var(--r-full);
+}
+.composer__plus.is-open {
+  background: var(--bg-active);
+  color: var(--fg-primary);
+}
+
+.composer__send {
+  border-radius: var(--r-full);
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.composer__feedback {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-xs);
+  color: var(--fg-secondary);
+  overflow: hidden;
+}
+.composer__feedback--muted {
+  color: var(--fg-quaternary);
+}
+.composer__feedback--warn {
+  color: var(--warning);
+}
+.composer__feedback-note {
+  color: var(--fg-quaternary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer__dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  border-radius: var(--r-xl);
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  pointer-events: none;
+}
+.composer__dropzone code {
+  background: var(--accent-soft);
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+}
+
+.composer__legal {
+  max-width: var(--content-max);
+  margin: var(--s-2) auto 0;
+  text-align: center;
+  font-size: var(--text-2xs);
+  color: var(--fg-quaternary);
+}
+.composer__legal kbd {
+  margin: 0 1px;
+}
+
+@media (max-width: 900px) {
+  .composer-dock {
+    padding: var(--s-2) var(--s-3) var(--s-3);
+    /* Solid on small screens: the fade reads as a clipping artefact there. */
+    background: var(--bg-app);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .composer__legal {
+    display: none;
+  }
+}
