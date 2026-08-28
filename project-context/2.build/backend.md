@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implemented the initial Python backend for Fleet Recon, the product defined in the PRD and SAD. The request's "recruitment assistant" label conflicts with those source artifacts, so this implementation follows Fleet Recon's endpoint-reconciliation scope.
+Implemented the initial Python backend for Fleet Recon, the endpoint-reconciliation workspace defined in the PRD and SAD.
 
 ## Delivered
 

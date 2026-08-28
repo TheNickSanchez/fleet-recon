@@ -4,8 +4,6 @@
 
 React 19 + TypeScript + Vite frontend for the Fleet Recon MVP, implementing SAD §3 (Frontend Architecture Specification).
 
-The original request used the label "recruitment assistant", which conflicts with the PRD/SAD and backend scope. This implementation follows the authoritative Fleet Recon endpoint-reconciliation product scope, consistent with the resolution recorded in `backend.md`.
-
 This document supersedes the first-pass implementation. That pass was functional but visually and interactionally weak: a `+` menu that offered "Paste Usernames" as a discrete mode, a permanently mounted canvas panel that consumed a third of the viewport while empty, no navigation model, and inline error blocks. The interface was rebuilt around an explicit design system, a collapsible navigation rail, and intent-detecting input.
 
 ## Interaction Design Decisions
@@ -185,13 +183,12 @@ Switch roles from the account menu in the top bar, or with `⌘K` → "Switch ro
 
 ## Assumptions
 
-1. The authoritative product scope is Fleet Recon per PRD/SAD; "recruitment assistant" was a copy-paste error.
-2. Backend behaviour is taken from `backend/main.py`, `backend/services.py`, and `backend/schemas.py` as the contract of record where documentation and code diverge.
-3. Deriving canvas rows from submitted input is an acceptable MVP stand-in for server-side work items, given it is disclosed in the UI.
-4. Persisting thread and canvas state in `localStorage` is acceptable because no list endpoints exist; it is per-browser and not shared collaboration state.
-5. Bounded polling is an acceptable interim for SSE/WebSocket at MVP scale.
-6. Plain CSS with a token layer is preferred over a component library for a small surface with a specific visual identity.
-7. The Vite dev proxy is the correct place to resolve CORS, since modifying backend middleware is outside this persona's scope.
+1. Backend behaviour is taken from `backend/main.py`, `backend/services.py`, and `backend/schemas.py` as the contract of record where documentation and code diverge.
+2. Deriving canvas rows from submitted input is an acceptable MVP stand-in for server-side work items, given it is disclosed in the UI.
+3. Persisting thread and canvas state in `localStorage` is acceptable because no list endpoints exist; it is per-browser and not shared collaboration state.
+4. Bounded polling is an acceptable interim for SSE/WebSocket at MVP scale.
+5. Plain CSS with a token layer is preferred over a component library for a small surface with a specific visual identity.
+6. The Vite dev proxy is the correct place to resolve CORS, since modifying backend middleware is outside this persona's scope.
 
 ## Open Questions
 
