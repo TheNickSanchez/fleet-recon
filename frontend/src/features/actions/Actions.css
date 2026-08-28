@@ -1,0 +1,196 @@
+.choice-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.choice:hover {
+  border-color: var(--border-strong);
+}
+.choice.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choice__radio {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  position: relative;
+}
+.choice.is-active .choice__radio {
+  border-color: var(--accent);
+}
+.choice.is-active .choice__radio::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.choice__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.choice__title {
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+.choice__meta {
+  font-size: var(--text-2xs);
+  color: var(--fg-tertiary);
+}
+
+.preview {
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
+}
+.preview__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: 3px 0;
+  font-size: var(--text-xs);
+  color: var(--fg-tertiary);
+}
+.preview__row strong {
+  color: var(--fg-primary);
+  font-weight: 600;
+}
+.preview__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+  list-style: none;
+  padding-left: 0;
+}
+.preview__targets li {
+  padding: 2px var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  font-size: var(--text-2xs);
+  font-family: var(--font-mono);
+}
+
+/* ---- Action cards ---- */
+.action-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+}
+.action-card--pending_confirmation {
+  border-left-color: var(--warning);
+}
+.action-card--confirmed {
+  border-left-color: var(--accent);
+}
+.action-card--executed {
+  border-left-color: var(--success);
+}
+.action-card--expired {
+  border-left-color: var(--fg-quaternary);
+  opacity: 0.75;
+}
+
+.action-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.action-card__op {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.action-card__connector {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--fg-tertiary);
+}
+
+.action-card__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-5);
+}
+.action-card__facts dt {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--fg-quaternary);
+}
+.action-card__facts dd {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--fg-secondary);
+}
+
+.action-card__steps {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) 0;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-2xs);
+  color: var(--fg-quaternary);
+  white-space: nowrap;
+}
+.step__dot {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+}
+.step.is-done {
+  color: var(--success);
+}
+.step.is-current {
+  color: var(--accent);
+  font-weight: 600;
+}
+.step__line {
+  flex: 1;
+  height: 1px;
+  min-width: 16px;
+  background: var(--border-default);
+}
+
+.action-card__actions {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}

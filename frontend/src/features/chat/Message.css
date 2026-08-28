@@ -1,0 +1,206 @@
+.msg {
+  display: flex;
+  gap: var(--s-3);
+  max-width: var(--content-max);
+  width: 100%;
+  margin: 0 auto;
+  animation: msg-in var(--dur-slow) var(--ease-out);
+}
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ---- User ---- */
+.msg--user {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s-1);
+}
+.msg__bubble {
+  max-width: 78%;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-xs);
+}
+.msg__text {
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.msg__time {
+  font-size: var(--text-2xs);
+  color: var(--fg-quaternary);
+  padding-right: var(--s-1);
+}
+
+/* ---- Agent ---- */
+.msg--agent {
+  align-items: flex-start;
+}
+.msg__avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  margin-top: 2px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.msg__avatar--success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.msg__avatar--warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.msg__avatar--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.msg__avatar--info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.msg__card {
+  flex: 1;
+  min-width: 0;
+  padding: var(--s-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm) var(--r-lg) var(--r-lg) var(--r-lg);
+  box-shadow: var(--shadow-xs);
+}
+.msg__card--danger {
+  border-color: var(--danger-soft);
+  background: var(--danger-soft);
+}
+
+.msg__card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+.msg__card-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--danger);
+}
+.msg__card-time {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  color: var(--fg-quaternary);
+}
+
+.msg__summary {
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  color: var(--fg-secondary);
+}
+.msg__summary strong {
+  color: var(--fg-primary);
+  font-weight: 650;
+}
+
+.msg__error {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--danger);
+}
+
+.msg__progress {
+  margin-top: var(--s-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.msg__progress-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  overflow: hidden;
+  position: relative;
+}
+.msg__progress-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  animation: indeterminate 1.4s var(--ease-in-out) infinite;
+}
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+.msg__progress-label {
+  font-size: var(--text-xs);
+  color: var(--fg-tertiary);
+  white-space: nowrap;
+}
+
+.msg__notice {
+  margin-top: var(--s-3);
+}
+.msg__notice code {
+  background: rgba(0, 0, 0, 0.08);
+  padding: 0 4px;
+  border-radius: var(--r-xs);
+}
+
+.msg__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-5);
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.msg__facts dt {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--fg-quaternary);
+}
+.msg__facts dd {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--fg-secondary);
+}
+
+.msg__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+.msg__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
