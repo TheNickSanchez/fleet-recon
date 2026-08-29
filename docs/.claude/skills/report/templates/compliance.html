@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{{REPORT_TYPE}} Compliance — {{DATE}}</title>
+<!--
+  TEMPLATE: Fleet Compliance Report
+  Used for: Zscaler gap, Nessus/Tenable CVE, FileVault status, any fleet-wide check.
+  Emitted to ~/work/reports/<kind>-YYYY-MM-DD.html
+  Supports sortable table, status pills, copy-serials button.
+  ARIA fills {{PLACEHOLDERS}} at generation time.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  a{color:var(--accent);text-decoration:none}
+  header{padding:22px 28px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%);position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  nav{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:var(--sans);transition:all .15s}
+  nav button:hover{color:var(--text);border-color:var(--muted)}
+  nav button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main{max-width:1280px;margin:0 auto;padding:22px 28px 80px}
+  section{display:none;animation:fade .18s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  h2{font-size:18px;margin:4px 0 14px;font-weight:600}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  .stat{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 18px}
+  .stat .s{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:110px}
+  .stat .s b{display:block;font-size:20px;color:var(--accent);font-weight:700}
+  .stat .s b.red{color:var(--bad)}
+  .stat .s b.yellow{color:var(--warn)}
+  .stat .s b.green{color:var(--good)}
+  .stat .s span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.accent{color:#fff;background:var(--accent);border-color:var(--accent)}
+  /* FILTER BAR */
+  .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;align-items:center}
+  .filter-bar input{
+    border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;
+    font-family:var(--sans);background:#fff;color:var(--text);outline:none;min-width:220px;
+  }
+  .filter-bar input:focus{border-color:var(--accent)}
+  .filter-bar select{
+    border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;
+    font-family:var(--sans);background:#fff;color:var(--text);cursor:pointer;outline:none;
+  }
+  /* TABLE */
+  .tbl-wrap{overflow-x:auto}
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{background:var(--surface);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;cursor:pointer;user-select:none}
+  th.sort-asc::after{content:" ▲";font-size:9px;color:var(--accent)}
+  th.sort-desc::after{content:" ▼";font-size:9px;color:var(--accent)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface)}
+  .hidden{display:none}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  /* BUTTONS */
+  .btn{background:var(--accent);color:#fff;border:none;padding:7px 14px;border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:5px;margin-bottom:4px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  .verdict{padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#EDE8FF 0%,var(--surface) 100%);border:1px solid var(--border);border-left:4px solid var(--accent);margin:8px 0 16px}
+  .verdict strong{color:var(--accent)}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:28px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+  pre{font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px;overflow-x:auto}
+  pre code{background:none;border:none;padding:0}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{REPORT_TYPE}} Report <span style="color:var(--muted);font-weight:400;font-size:16px">· {{DATE}}</span></h1>
+  <div class="sub">Generated <strong>{{DATETIME}}</strong> · Scope: <strong>{{SCOPE}}</strong> · Source: {{SOURCE}}</div>
+  <nav id="nav">
+    <button data-tab="summary" class="active">Summary</button>
+    <button data-tab="devices">Affected Devices ({{AFFECTED_COUNT}})</button>
+    <button data-tab="remediation">Remediation</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- SUMMARY -->
+<section id="summary" class="active">
+  <div class="stat">
+    <div class="s"><b class="red">{{AFFECTED_COUNT}}</b><span>Affected</span></div>
+    <div class="s"><b class="green">{{COMPLIANT_COUNT}}</b><span>Compliant</span></div>
+    <div class="s"><b class="yellow">{{STALE_COUNT}}</b><span>Stale (&gt;7d)</span></div>
+    <div class="s"><b>{{TOTAL_COUNT}}</b><span>Fleet Total</span></div>
+    <div class="s"><b>{{PCT_COMPLIANT}}%</b><span>Compliance Rate</span></div>
+  </div>
+
+  <div class="verdict">
+    <strong>{{VERDICT_HEADLINE}}</strong> {{VERDICT_BODY}}
+  </div>
+
+  <!-- Optional: chart or distribution breakdown ARIA can add inline SVG here -->
+  {{SUMMARY_CHART}}
+</section>
+
+<!-- DEVICES TABLE -->
+<section id="devices">
+  <div class="filter-bar">
+    <input id="search" placeholder="Filter by serial, hostname, or user…" oninput="filterTable()"/>
+    <select id="status-filter" onchange="filterTable()">
+      <option value="">All statuses</option>
+      <option value="bad">Error / Non-compliant</option>
+      <option value="warn">Warning</option>
+      <option value="good">OK</option>
+    </select>
+    <button class="btn" onclick="copyAffected()">Copy affected serials</button>
+    <button class="btn ghost" onclick="window.print()">Export PDF</button>
+  </div>
+
+  <div class="tbl-wrap">
+  <table id="devices-table">
+    <thead>
+      <tr>
+        <th onclick="sortTable(0)">Serial</th>
+        <th onclick="sortTable(1)">Hostname</th>
+        <th onclick="sortTable(2)">User</th>
+        <th onclick="sortTable(3)">Status</th>
+        <th onclick="sortTable(4)">Detail</th>
+        <th onclick="sortTable(5)">Last Check-in</th>
+      </tr>
+    </thead>
+    <tbody id="devices-body">
+      <!--
+        ARIA fills rows. Example row:
+        <tr data-status="bad" data-serial="C02ABC123XYZ">
+          <td><code>C02ABC123XYZ</code></td>
+          <td>dsw-macbook-pro</td>
+          <td>alice.smith</td>
+          <td><span class="pill bad">ERROR</span></td>
+          <td>Not enrolled</td>
+          <td>2026-05-27</td>
+        </tr>
+      -->
+      {{DEVICE_ROWS}}
+    </tbody>
+  </table>
+  </div>
+  <p class="small" id="row-count" style="margin-top:8px">{{AFFECTED_COUNT}} devices shown</p>
+</section>
+
+<!-- REMEDIATION -->
+<section id="remediation">
+  <h2>Remediation Steps</h2>
+  {{REMEDIATION_CONTENT}}
+
+  <h3>Jamf Policy / Script</h3>
+  <pre id="remediation-script"><code>{{REMEDIATION_SCRIPT}}</code></pre>
+  <button class="btn" onclick="copyText('remediation-script')">Copy script call</button>
+</section>
+
+<!-- COPY-BACK -->
+<div class="copy-back">
+  <h3>Continue in ARIA</h3>
+  <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+  <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+</div>
+
+</main>
+
+<script>
+/* Tab nav */
+(function(){
+  const tabs = document.querySelectorAll('#nav button');
+  const secs = document.querySelectorAll('main section');
+  tabs.forEach(b=>b.addEventListener('click',()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    secs.forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    document.getElementById(b.dataset.tab).classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+  }));
+})();
+
+/* Filter */
+function filterTable(){
+  const q = document.getElementById('search').value.toLowerCase();
+  const sf = document.getElementById('status-filter').value;
+  let vis = 0;
+  document.querySelectorAll('#devices-body tr').forEach(row=>{
+    const text = row.textContent.toLowerCase();
+    const status = row.dataset.status || '';
+    const show = (!q || text.includes(q)) && (!sf || status === sf);
+    row.classList.toggle('hidden', !show);
+    if(show) vis++;
+  });
+  document.getElementById('row-count').textContent = vis + ' devices shown';
+}
+
+/* Sort */
+let sortDir = {};
+function sortTable(col){
+  const tbody = document.getElementById('devices-body');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const dir = (sortDir[col] = !(sortDir[col]));
+  rows.sort((a,b)=>{
+    const av = a.cells[col]?.textContent.trim() || '';
+    const bv = b.cells[col]?.textContent.trim() || '';
+    return dir ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+  rows.forEach(r=>tbody.appendChild(r));
+  document.querySelectorAll('th').forEach((th,i)=>{
+    th.classList.remove('sort-asc','sort-desc');
+    if(i===col) th.classList.add(dir?'sort-asc':'sort-desc');
+  });
+}
+
+/* Copy affected serials */
+function copyAffected(){
+  const serials = Array.from(document.querySelectorAll('#devices-body tr:not(.hidden)[data-serial]'))
+    .map(r=>r.dataset.serial).join('\n');
+  navigator.clipboard.writeText(serials).then(()=>{
+    const btn = event.target;
+    btn.textContent='Copied ✓';
+    setTimeout(()=>btn.textContent='Copy affected serials',2000);
+  });
+}
+
+function copyText(id){
+  const el = document.getElementById(id);
+  navigator.clipboard.writeText(el.innerText||el.value)
+    .then(()=>{const b=event.target;const o=b.textContent;b.textContent='Copied ✓';setTimeout(()=>b.textContent=o,2000)});
+}
+</script>
+</body>
+</html>

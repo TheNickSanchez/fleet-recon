@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{{TICKET_KEY}} — {{TICKET_TITLE}}</title>
+<!--
+  TEMPLATE: Per-Ticket Stakeholder Report
+  Emitted to ~/work/logs/CPE-XXXX/report.html during Session Wrap (Step 1).
+  Audience: the engineer, their lead, anyone linked from a Jira comment.
+  ARIA fills {{PLACEHOLDERS}}. CSS is inlined — self-contained file.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  a{color:var(--accent);text-decoration:none}
+  header{padding:22px 28px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%);position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header h1 .key{color:var(--accent);margin-right:8px;font-family:var(--mono);font-size:16px}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  nav{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:var(--sans);transition:all .15s}
+  nav button:hover{color:var(--text);border-color:var(--muted)}
+  nav button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main{max-width:1100px;margin:0 auto;padding:22px 28px 80px}
+  section{display:none;animation:fade .18s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  h2{font-size:18px;margin:4px 0 14px;font-weight:600}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  ul{padding-left:18px} li{margin:4px 0;font-size:13.5px}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500;margin-right:4px}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.accent{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .pill.done{color:#fff;background:var(--good);border-color:var(--good)}
+  .stat{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 18px}
+  .stat .s{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:100px}
+  .stat .s b{display:block;font-size:20px;color:var(--accent);font-weight:700}
+  .stat .s span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+  .verdict{padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#EDE8FF 0%,var(--surface) 100%);border:1px solid var(--border);border-left:4px solid var(--accent);margin:8px 0 16px}
+  .verdict strong{color:var(--accent)}
+  .event{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .event:last-child{border-bottom:none}
+  .event .ts{color:var(--muted);font-size:12px;white-space:nowrap;min-width:145px;padding-top:1px}
+  .event .body{flex:1;font-size:13.5px}
+  .event .body .detail{font-size:12.5px;color:var(--muted);margin-top:2px}
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{background:var(--surface);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface)}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  pre{font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px;overflow-x:auto;line-height:1.55}
+  pre code{background:none;border:none;padding:0}
+  .btn{background:var(--accent);color:#fff;border:none;padding:7px 14px;border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:5px;margin-bottom:4px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:28px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+  details{background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:8px 0}
+  details summary{cursor:pointer;font-weight:500}
+  details summary:hover{color:var(--accent)}
+  details[open]{padding-bottom:14px}
+  .phase{background:#fff;border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:0 10px 10px 0;padding:14px 18px;margin:10px 0}
+  .phase.done{border-left-color:var(--good)}
+  .phase.pending{border-left-color:var(--warn)}
+  .phase.blocked{border-left-color:var(--bad)}
+  .phase h4{margin:0 0 4px;font-size:15px;font-weight:600}
+  .phase .meta{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="key">{{TICKET_KEY}}</span>{{TICKET_TITLE}}</h1>
+  <div class="sub">
+    <span class="pill {{STATUS_CLASS}}">{{STATUS}}</span>
+    Priority <strong>{{PRIORITY}}</strong> ·
+    Last updated <strong>{{DATE}}</strong> ·
+    <a href="{{JIRA_URL}}">View in Jira ↗</a>
+  </div>
+  <nav id="nav">
+    <button data-tab="summary" class="active">Summary</button>
+    <button data-tab="timeline">Timeline</button>
+    <button data-tab="devices">Devices</button>
+    <button data-tab="scripts">Scripts</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- SUMMARY -->
+<section id="summary" class="active">
+  <div class="stat">
+    {{STAT_CHIPS}}
+  </div>
+
+  <div class="verdict">
+    <strong>{{VERDICT_HEADLINE}}</strong> {{VERDICT_BODY}}
+  </div>
+
+  <h3>Completed</h3>
+  <ul>{{COMPLETED_LIST}}</ul>
+
+  <h3>Pending / Next steps</h3>
+  {{PENDING_CONTENT}}
+
+  {{BLOCKERS_SECTION}}
+</section>
+
+<!-- TIMELINE -->
+<section id="timeline">
+  <h2>Work timeline</h2>
+  <div id="events">
+    {{TIMELINE_EVENTS}}
+  </div>
+</section>
+
+<!-- DEVICES -->
+<section id="devices">
+  <h2>Device status</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Serial</th>
+        <th>Hostname</th>
+        <th>User</th>
+        <th>Status</th>
+        <th>Detail</th>
+        <th>Checked</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{DEVICE_ROWS}}
+    </tbody>
+  </table>
+  <br/>
+  <button class="btn" onclick="copySerials()">Copy serials</button>
+  <pre id="serial-list" style="display:none">{{SERIAL_LIST}}</pre>
+</section>
+
+<!-- SCRIPTS -->
+<section id="scripts">
+  <h2>Scripts &amp; policies used</h2>
+  {{SCRIPTS_CONTENT}}
+</section>
+
+<!-- COPY-BACK -->
+<div class="copy-back">
+  <h3>Continue in ARIA</h3>
+  <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+  <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+  <button class="btn ghost" onclick="window.print()">Save as PDF</button>
+</div>
+
+</main>
+
+<script>
+(function(){
+  const tabs=document.querySelectorAll('#nav button');
+  const secs=document.querySelectorAll('main section');
+  tabs.forEach(b=>b.addEventListener('click',()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    secs.forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    document.getElementById(b.dataset.tab).classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+  }));
+})();
+
+function copySerials(){
+  const el=document.getElementById('serial-list');
+  navigator.clipboard.writeText(el.innerText||el.textContent)
+    .then(()=>{const b=event.target;b.textContent='Copied ✓';setTimeout(()=>b.textContent='Copy serials',2000)});
+}
+</script>
+</body>
+</html>

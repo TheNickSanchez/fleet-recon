@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Canary Dashboard — {{TICKET_KEY}} · {{DATE}}</title>
+<!--
+  TEMPLATE: Canary Rollout Dashboard
+  Snapshot at generation time — data does not auto-refresh.
+  "Approve rollout" button copies device list + next-step prompt to clipboard.
+  ARIA fills {{PLACEHOLDERS}} at generation time.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  a{color:var(--accent);text-decoration:none}
+  header{padding:22px 28px 12px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%)}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header h1 .key{color:var(--accent);font-family:var(--mono);font-size:16px;margin-right:8px}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  .snapshot-warn{background:#fff8e6;border-bottom:1px solid #e8d08a;padding:8px 28px;font-size:12.5px;color:#6b4e00}
+  main{max-width:1100px;margin:0 auto;padding:22px 28px 80px}
+  h2{font-size:18px;margin:4px 0 14px;font-weight:600}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  /* Progress bar */
+  .progress-wrap{background:var(--surface);border-radius:999px;height:10px;overflow:hidden;margin:4px 0 18px}
+  .progress-fill{height:100%;background:var(--accent);border-radius:999px;transition:width .3s}
+  .progress-fill.complete{background:var(--good)}
+  .progress-fill.partial{background:var(--warn)}
+  /* Stat strip */
+  .stat{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 20px}
+  .stat .s{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:100px}
+  .stat .s b{display:block;font-size:20px;color:var(--accent);font-weight:700}
+  .stat .s b.green{color:var(--good)} .stat .s b.red{color:var(--bad)} .stat .s b.yellow{color:var(--warn)}
+  .stat .s span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+  /* Device grid */
+  .device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:12px 0}
+  .device-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px}
+  .device-card.ok{border-left:4px solid var(--good)}
+  .device-card.warn{border-left:4px solid var(--warn)}
+  .device-card.error{border-left:4px solid var(--bad)}
+  .device-card.pending{border-left:4px solid var(--muted)}
+  .device-card .serial{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:3px}
+  .device-card .name{font-weight:600;font-size:14px}
+  .device-card .user{font-size:12.5px;color:var(--muted)}
+  .device-card .checkin{font-size:12px;color:var(--muted);margin-top:4px}
+  .device-card .status-line{display:flex;align-items:center;gap:6px;margin-top:6px}
+  /* Pills */
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.pending{color:var(--muted);background:var(--surface)}
+  /* Verdict */
+  .verdict{padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#EDE8FF 0%,var(--surface) 100%);border:1px solid var(--border);border-left:4px solid var(--accent);margin:8px 0 18px}
+  .verdict strong{color:var(--accent)}
+  /* Big approve button */
+  .approve-zone{background:#fff;border:2px dashed var(--border);border-radius:12px;padding:22px;text-align:center;margin:20px 0}
+  .approve-zone.ready{border-color:var(--good);background:#f0fff4}
+  .approve-zone.not-ready{border-color:var(--warn);background:#fffbf0}
+  .approve-zone p{color:var(--muted);font-size:13px;margin:8px 0 0}
+  .btn{background:var(--accent);color:#fff;border:none;padding:10px 20px;border-radius:7px;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:6px;margin-bottom:4px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.green{background:var(--good)} .btn.green:hover{background:#3a5a2a}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border);font-size:13px;padding:7px 14px}
+  .btn.ghost:hover{background:var(--surface)}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:28px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+  pre{font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px;overflow-x:auto;line-height:1.55}
+  pre code{background:none;border:none;padding:0}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="key">{{TICKET_KEY}}</span>Canary Dashboard — {{POLICY_NAME}}</h1>
+  <div class="sub">
+    <span class="pill {{STATUS_CLASS}}">{{ROLLOUT_STATUS}}</span>
+    Canary group <strong>{{GROUP_NAME}}</strong> ·
+    Snapshot taken <strong>{{DATETIME}}</strong> ·
+    <a href="{{JIRA_URL}}">{{TICKET_KEY}} ↗</a>
+  </div>
+</header>
+<div class="snapshot-warn">⚡ Snapshot — data reflects Jamf state at generation time. Re-run to refresh.</div>
+
+<main>
+
+  <!-- PROGRESS -->
+  <div style="margin:16px 0 4px;display:flex;justify-content:space-between;align-items:baseline">
+    <span style="font-weight:600">{{GREEN_COUNT}} / {{TOTAL_COUNT}} devices healthy</span>
+    <span class="small">{{PCT_GREEN}}%</span>
+  </div>
+  <div class="progress-wrap"><div class="progress-fill {{PROGRESS_CLASS}}" style="width:{{PCT_GREEN}}%"></div></div>
+
+  <!-- STAT STRIP -->
+  <div class="stat">
+    <div class="s"><b class="green">{{GREEN_COUNT}}</b><span>Healthy</span></div>
+    <div class="s"><b class="red">{{ERROR_COUNT}}</b><span>Error</span></div>
+    <div class="s"><b class="yellow">{{PENDING_COUNT}}</b><span>Pending</span></div>
+    <div class="s"><b>{{STALE_COUNT}}</b><span>Stale (&gt;7d)</span></div>
+    <div class="s"><b>{{APP_VERSION}}</b><span>App version</span></div>
+  </div>
+
+  <!-- VERDICT -->
+  <div class="verdict">
+    <strong>{{VERDICT_HEADLINE}}</strong> {{VERDICT_BODY}}
+  </div>
+
+  <!-- APPROVE ZONE -->
+  <div class="approve-zone {{APPROVE_ZONE_CLASS}}" id="approve-zone">
+    <button class="btn {{APPROVE_BTN_CLASS}}" id="approve-btn" onclick="approveRollout()">
+      {{APPROVE_BTN_LABEL}}
+    </button>
+    <button class="btn ghost" onclick="copySerialList()">Copy canary serials</button>
+    <p>{{APPROVE_ZONE_MSG}}</p>
+  </div>
+
+  <!-- DEVICE GRID -->
+  <h3>Device Status</h3>
+  <div class="device-grid">
+    <!--
+      ARIA fills device cards. Example:
+      <div class="device-card ok">
+        <div class="serial">C02ABC123XYZ</div>
+        <div class="name">dsw-macbook-alice</div>
+        <div class="user">alice.smith</div>
+        <div class="status-line"><span class="pill good">OK</span><span style="font-size:12px;color:var(--muted)">v4.5.0.298</span></div>
+        <div class="checkin">Last check-in: 2026-05-28 14:32</div>
+      </div>
+
+      <div class="device-card error">
+        <div class="serial">C02DEF456XYZ</div>
+        <div class="name">dsw-macbook-bob</div>
+        <div class="user">bob.jones</div>
+        <div class="status-line"><span class="pill bad">ERROR</span><span style="font-size:12px;color:var(--muted)">Not enrolled</span></div>
+        <div class="checkin">Last check-in: 2026-05-27 09:11</div>
+      </div>
+    -->
+    {{DEVICE_CARDS}}
+  </div>
+
+  <!-- SERIAL LIST (hidden — used by copy buttons) -->
+  <pre id="canary-serials" style="display:none">{{CANARY_SERIALS_NEWLINE}}</pre>
+  <pre id="fleet-serials" style="display:none">{{FLEET_SERIALS_NEWLINE}}</pre>
+
+  <!-- COPY-BACK -->
+  <div class="copy-back">
+    <h3>Continue in ARIA</h3>
+    <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+    <button class="btn" style="font-size:13px;padding:7px 14px" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+    <button class="btn ghost" onclick="window.print()">Save as PDF</button>
+  </div>
+
+</main>
+
+<script>
+function approveRollout(){
+  const prompt = `Promote {{TICKET_KEY}} ({{POLICY_NAME}}) from canary to fleet.\n` +
+    `Canary result: {{GREEN_COUNT}}/{{TOTAL_COUNT}} devices healthy.\n` +
+    `Fleet group: {{FLEET_GROUP_ID}}\n` +
+    `Canary serials:\n` +
+    (document.getElementById('canary-serials').innerText || '{{CANARY_SERIALS_NEWLINE}}');
+  navigator.clipboard.writeText(prompt).then(()=>{
+    const btn = document.getElementById('approve-btn');
+    btn.textContent = 'Copied ✓ — paste into ARIA';
+    setTimeout(()=>btn.textContent='{{APPROVE_BTN_LABEL}}', 3000);
+  });
+}
+function copySerialList(){
+  const el = document.getElementById('canary-serials');
+  navigator.clipboard.writeText(el.innerText||el.textContent)
+    .then(()=>{const b=event.target;b.textContent='Copied ✓';setTimeout(()=>b.textContent='Copy canary serials',2000)});
+}
+</script>
+</body>
+</html>

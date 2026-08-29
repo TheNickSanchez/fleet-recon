@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bulk Triage — {{CONTEXT}} · {{DATE}}</title>
+<!--
+  TEMPLATE: Bulk Triage Editor
+  Drag CPE tickets or devices into Now / Next / Later columns.
+  "Copy as JSON" exports the bucketing as a paste-back prompt.
+  ARIA fills {{PLACEHOLDERS}} with real tickets/devices at generation time.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  header{padding:20px 28px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%)}
+  header h1{margin:0;font-size:19px;font-weight:600;letter-spacing:-.015em}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  main{max-width:1200px;margin:0 auto;padding:20px 28px 80px}
+  h3{font-size:11.5px;color:var(--accent);margin:20px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500;margin-right:4px}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.accent{color:#fff;background:var(--accent);border-color:var(--accent)}
+  /* Kanban */
+  .kanban{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:14px 0}
+  @media(max-width:700px){.kanban{grid-template-columns:1fr}}
+  .col{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;min-height:240px}
+  .col.drag-over{border-color:var(--accent);background:#EDE8FF}
+  .col-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .col-header h4{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+  .col-count{font-size:12px;background:#fff;border:1px solid var(--border);border-radius:999px;padding:1px 8px;color:var(--muted);font-weight:600}
+  /* Cards */
+  .item{background:#fff;border:1px solid var(--border);border-radius:7px;padding:10px 12px;margin-bottom:8px;cursor:grab;user-select:none}
+  .item:active{cursor:grabbing;opacity:.75;box-shadow:0 4px 12px rgba(76,0,255,.12)}
+  .item.dragging{opacity:.5}
+  .item .item-key{font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:600;margin-bottom:2px}
+  .item .item-title{font-size:13px;font-weight:500;line-height:1.4}
+  .item .item-meta{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .item:hover{border-color:var(--accent)}
+  /* Buttons */
+  .btn{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:6px;margin-bottom:4px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  /* Action bar */
+  .action-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--border);margin-top:8px}
+  /* Output */
+  .output-box{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:22px}
+  .output-box h3{margin-top:0;color:var(--accent)}
+  pre{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;line-height:1.55;min-height:60px}
+  pre code{background:none;border:none;padding:0}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:24px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Bulk Triage — {{CONTEXT}}</h1>
+  <div class="sub">{{ITEM_COUNT}} items · Snapshot <strong>{{DATETIME}}</strong> · Drag to bucket, then copy as prompt.</div>
+</header>
+
+<main>
+
+  <p class="small" style="margin:0 0 12px">Drag items between columns. When done, click <strong>Copy as prompt</strong> to paste your triage back into ARIA.</p>
+
+  <div class="kanban" id="board">
+
+    <div class="col" id="col-now">
+      <div class="col-header">
+        <h4>🔴 Now</h4>
+        <span class="col-count" id="count-now">0</span>
+      </div>
+      <!-- ARIA pre-populates high-priority items here -->
+      {{NOW_ITEMS}}
+    </div>
+
+    <div class="col" id="col-next">
+      <div class="col-header">
+        <h4>🟡 Next</h4>
+        <span class="col-count" id="count-next">0</span>
+      </div>
+      {{NEXT_ITEMS}}
+    </div>
+
+    <div class="col" id="col-later">
+      <div class="col-header">
+        <h4>⚪ Later</h4>
+        <span class="col-count" id="count-later">0</span>
+      </div>
+      {{LATER_ITEMS}}
+    </div>
+
+  </div>
+
+  <!--
+    ARIA populates items using this pattern (repeat for each ticket/device):
+    <div class="item" draggable="true" data-key="CPE-3712" data-title="PPPC drift on 14 devices" data-priority="P2" data-status="In Progress">
+      <div class="item-key">CPE-3712</div>
+      <div class="item-title">PPPC drift on 14 devices</div>
+      <div class="item-meta">
+        <span class="pill warn">P2</span>
+        <span>In Progress</span>
+      </div>
+    </div>
+  -->
+
+  <div class="action-bar">
+    <button class="btn" onclick="copyAsPrompt()">Copy as prompt</button>
+    <button class="btn ghost" onclick="resetBoard()">Reset order</button>
+    <span class="small" id="action-feedback"></span>
+  </div>
+
+  <!-- JSON EXPORT (updated live) -->
+  <div class="output-box">
+    <h3>Exported triage</h3>
+    <p class="small">Updates as you drag. Copy prompt button above packages this into an ARIA instruction.</p>
+    <pre id="json-out"><code id="json-content">{}</code></pre>
+  </div>
+
+  <div class="copy-back">
+    <h3>Continue in ARIA</h3>
+    <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+    <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+  </div>
+
+</main>
+
+<script>
+const COLS = ['col-now','col-next','col-later'];
+const LABELS = {now:'Now',next:'Next',later:'Later'};
+let dragged = null;
+
+function initDrag(){
+  document.querySelectorAll('.item').forEach(el=>{
+    el.draggable = true;
+    el.addEventListener('dragstart',e=>{dragged=el;el.classList.add('dragging')});
+    el.addEventListener('dragend',e=>{el.classList.remove('dragging');updateAll()});
+  });
+  COLS.forEach(id=>{
+    const col = document.getElementById(id);
+    col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('drag-over')});
+    col.addEventListener('dragleave',()=>col.classList.remove('drag-over'));
+    col.addEventListener('drop',e=>{
+      e.preventDefault();col.classList.remove('drag-over');
+      if(dragged){col.appendChild(dragged);dragged=null;updateAll();}
+    });
+  });
+}
+
+function updateAll(){
+  COLS.forEach(id=>{
+    const col = document.getElementById(id);
+    const key = id.replace('col-','');
+    const count = col.querySelectorAll('.item').length;
+    document.getElementById('count-'+key).textContent = count;
+  });
+  updateJSON();
+}
+
+function getBuckets(){
+  const out = {now:[],next:[],later:[]};
+  COLS.forEach(id=>{
+    const key = id.replace('col-','');
+    document.getElementById(id).querySelectorAll('.item').forEach(el=>{
+      out[key].push({key:el.dataset.key,title:el.dataset.title,priority:el.dataset.priority||'',status:el.dataset.status||''});
+    });
+  });
+  return out;
+}
+
+function updateJSON(){
+  document.getElementById('json-content').textContent = JSON.stringify(getBuckets(), null, 2);
+}
+
+function copyAsPrompt(){
+  const b = getBuckets();
+  const lines = ['Apply this triage to the backlog:\n'];
+  Object.entries(b).forEach(([bucket,items])=>{
+    if(items.length){
+      lines.push(bucket.toUpperCase()+':');
+      items.forEach(i=>lines.push('  '+i.key+(i.title?' — '+i.title:'')));
+      lines.push('');
+    }
+  });
+  lines.push('Acknowledge and update Jira priorities accordingly.');
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>{
+    const fb = document.getElementById('action-feedback');
+    fb.textContent = 'Copied ✓ — paste into ARIA';
+    setTimeout(()=>fb.textContent='',3000);
+  });
+}
+
+function resetBoard(){
+  if(!confirm('Reset all items to their original columns?')) return;
+  location.reload();
+}
+
+initDrag();
+updateAll();
+</script>
+</body>
+</html>

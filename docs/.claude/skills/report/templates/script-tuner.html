@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Script Tuner — {{SCRIPT_NAME}}</title>
+<!--
+  TEMPLATE: Jamf Script Parameter Tuner
+  Renders a form for $4–$6 params, shows the resolved command preview,
+  and copies the jamf_policy_set_script MCP call to clipboard.
+  ARIA fills {{PLACEHOLDERS}} and the SCRIPT_PARAMS_JSON at generation time.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  header{padding:22px 28px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%)}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  main{max-width:860px;margin:0 auto;padding:22px 28px 80px}
+  h2{font-size:17px;margin:4px 0 14px;font-weight:600}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  /* Form */
+  .form-group{margin-bottom:18px}
+  .form-group label{display:block;font-size:13px;font-weight:600;margin-bottom:5px}
+  .form-group .param-name{font-family:var(--mono);color:var(--accent);margin-right:6px}
+  .form-group .desc{font-size:12.5px;color:var(--muted);margin-bottom:5px}
+  .form-group input,.form-group select{
+    width:100%;border:1px solid var(--border);border-radius:6px;padding:8px 10px;
+    font-size:13px;font-family:var(--sans);background:#fff;color:var(--text);outline:none;
+  }
+  .form-group input:focus,.form-group select:focus{border-color:var(--accent)}
+  .form-group .options{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .form-group .option-btn{
+    background:var(--surface);border:1px solid var(--border);border-radius:5px;
+    padding:4px 10px;font-size:12.5px;cursor:pointer;font-family:var(--sans);
+    transition:all .12s;color:var(--text);
+  }
+  .form-group .option-btn:hover,.form-group .option-btn.selected{
+    background:var(--accent);color:#fff;border-color:var(--accent);
+  }
+  /* Preview */
+  .preview-box{background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px;margin:18px 0}
+  .preview-box h3{margin-top:0}
+  pre{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;line-height:1.6;margin:0}
+  pre code{background:none;border:none;padding:0}
+  .diff-add{color:var(--good)}
+  .diff-remove{color:var(--bad)}
+  /* Buttons */
+  .btn{background:var(--accent);color:#fff;border:none;padding:9px 18px;border-radius:6px;font-size:13.5px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:6px;margin-bottom:4px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  /* Policy cards */
+  .policy-select{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:10px 0 18px}
+  .policy-card{background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all .12s}
+  .policy-card:hover{border-color:var(--accent)}
+  .policy-card.selected{border-color:var(--accent);background:#EDE8FF}
+  .policy-card .pid{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .policy-card .pname{font-size:13px;font-weight:600;margin-top:2px}
+  /* Validation */
+  .valid-row{display:flex;gap:8px;align-items:center;font-size:13px;padding:5px 0}
+  .valid-row .dot{width:8px;height:8px;border-radius:50%;background:var(--border);flex-shrink:0}
+  .valid-row .dot.ok{background:var(--good)} .valid-row .dot.warn{background:var(--warn)} .valid-row .dot.err{background:var(--bad)}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:28px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Script Tuner — {{SCRIPT_NAME}}</h1>
+  <div class="sub">
+    Script ID <strong>{{SCRIPT_ID}}</strong> ·
+    Category <strong>{{CATEGORY}}</strong> ·
+    <span class="pill">{{PRIORITY}}</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- POLICY SELECTOR -->
+  <h3>Target Policy</h3>
+  <p class="small">Select which policy to update. You can also type a policy ID manually.</p>
+  <div class="policy-select" id="policy-select">
+    <!--
+      ARIA fills policy cards. Example:
+      <div class="policy-card" onclick="selectPolicy('1460','CPE-3654-Zscaler-Deploy')">
+        <div class="pid">Policy 1460</div>
+        <div class="pname">CPE-3654-Zscaler-Deploy</div>
+      </div>
+    -->
+    {{POLICY_CARDS}}
+  </div>
+  <div class="form-group">
+    <label>Or enter policy ID manually</label>
+    <input type="text" id="manual-policy-id" placeholder="e.g. 1460" oninput="updatePreview()"/>
+  </div>
+
+  <!-- PARAMETER FORM -->
+  <h3>Script Parameters</h3>
+  <div id="param-form">
+    <!--
+      ARIA fills param groups. Example for each used param:
+
+      <div class="form-group">
+        <label><span class="param-name">$4</span>Mode</label>
+        <div class="desc">Run mode — "canary" tests on one device, "deploy" runs fleet-wide.</div>
+        <div class="options">
+          <button class="option-btn selected" onclick="setParam(4,'canary',this)">canary</button>
+          <button class="option-btn" onclick="setParam(4,'deploy',this)">deploy</button>
+        </div>
+        <input type="text" id="param4" value="canary" oninput="updatePreview()" placeholder="canary"/>
+      </div>
+
+      <div class="form-group">
+        <label><span class="param-name">$5</span>Jira Token (optional)</label>
+        <div class="desc">If set, script posts a Jira comment on completion.</div>
+        <input type="text" id="param5" value="" oninput="updatePreview()" placeholder="leave blank to skip"/>
+      </div>
+    -->
+    {{PARAM_FORM_FIELDS}}
+  </div>
+
+  <!-- PREVIEW -->
+  <div class="preview-box">
+    <h3>Resolved MCP call preview</h3>
+    <pre id="call-preview"><code id="call-code">Loading…</code></pre>
+
+    <h3 style="margin-top:18px">Validation</h3>
+    <div id="validation">
+      <div class="valid-row"><span class="dot" id="dot-policy"></span><span id="val-policy">Select a policy above</span></div>
+      <div class="valid-row"><span class="dot" id="dot-script"></span><span>Script ID {{SCRIPT_ID}} — {{SCRIPT_NAME}}</span></div>
+      <div class="valid-row"><span class="dot ok" id="dot-p4"></span><span id="val-p4">$4 = <code id="p4-val">{{DEFAULT_P4}}</code></span></div>
+      <div class="valid-row"><span class="dot ok" id="dot-p5"></span><span id="val-p5">$5 = <code id="p5-val">{{DEFAULT_P5}}</code> (optional)</span></div>
+      <div class="valid-row"><span class="dot ok" id="dot-p6"></span><span id="val-p6">$6 = <code id="p6-val">{{DEFAULT_P6}}</code> (optional)</span></div>
+    </div>
+  </div>
+
+  <!-- ACTION BUTTONS -->
+  <div style="margin:14px 0">
+    <button class="btn" onclick="copyCall()">Copy MCP call</button>
+    <button class="btn ghost" onclick="copyJamfPolicy()">Copy jamf_create_policy call</button>
+    <span class="small" id="copy-feedback" style="margin-left:8px"></span>
+  </div>
+
+  <!-- COPY-BACK -->
+  <div class="copy-back">
+    <h3>Continue in ARIA</h3>
+    <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+    <button class="btn" style="font-size:12.5px;padding:7px 14px" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+  </div>
+
+</main>
+
+<script>
+const SCRIPT_ID = '{{SCRIPT_ID}}';
+const SCRIPT_NAME = '{{SCRIPT_NAME}}';
+let selectedPolicyId = '';
+let selectedPolicyName = '';
+
+const params = {
+  4: document.getElementById('param4')?.value || '{{DEFAULT_P4}}',
+  5: document.getElementById('param5')?.value || '{{DEFAULT_P5}}',
+  6: document.getElementById('param6')?.value || '{{DEFAULT_P6}}',
+};
+
+function selectPolicy(id, name){
+  selectedPolicyId = id;
+  selectedPolicyName = name;
+  document.querySelectorAll('.policy-card').forEach(c=>c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  document.getElementById('manual-policy-id').value = id;
+  updatePreview();
+}
+
+function setParam(n, val, btn){
+  const input = document.getElementById('param'+n);
+  if(input) input.value = val;
+  const parent = btn.closest('.form-group');
+  parent.querySelectorAll('.option-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  params[n] = val;
+  updatePreview();
+}
+
+function getParams(){
+  [4,5,6].forEach(n=>{
+    const el = document.getElementById('param'+n);
+    if(el) params[n] = el.value;
+  });
+  return params;
+}
+
+function buildCall(){
+  const pid = document.getElementById('manual-policy-id')?.value || selectedPolicyId;
+  const p = getParams();
+  const args = [`policy_id="${pid}"`, `script_id="${SCRIPT_ID}"`];
+  if(p[4]) args.push(`parameter4="${p[4]}"`);
+  if(p[5]) args.push(`parameter5="${p[5]}"`);
+  if(p[6]) args.push(`parameter6="${p[6]}"`);
+  return `jamf_policy_set_script(\n  ${args.join(',\n  ')}\n)`;
+}
+
+function updatePreview(){
+  const pid = document.getElementById('manual-policy-id')?.value || selectedPolicyId;
+  const p = getParams();
+  document.getElementById('call-code').textContent = buildCall();
+
+  // validation dots
+  const dotPolicy = document.getElementById('dot-policy');
+  const valPolicy = document.getElementById('val-policy');
+  if(pid){dotPolicy.className='dot ok';valPolicy.textContent='Policy ID '+pid+(selectedPolicyName?' — '+selectedPolicyName:'');}
+  else{dotPolicy.className='dot err';valPolicy.textContent='No policy selected';}
+
+  [4,5,6].forEach(n=>{
+    const el = document.getElementById('p'+n+'-val');
+    if(el) el.textContent = p[n]||'(empty)';
+  });
+}
+
+function copyCall(){
+  navigator.clipboard.writeText(buildCall()).then(()=>{
+    const fb = document.getElementById('copy-feedback');
+    fb.textContent = 'Copied ✓';
+    setTimeout(()=>fb.textContent='', 2500);
+  });
+}
+
+function copyJamfPolicy(){
+  const pid = document.getElementById('manual-policy-id')?.value || selectedPolicyId;
+  const p = getParams();
+  const call = `# Run in ARIA to apply script to policy:\njamf_policy_set_script(\n  policy_id="${pid}",\n  script_id="${SCRIPT_ID}",\n  parameter4="${p[4]||''}",\n  parameter5="${p[5]||''}",\n  parameter6="${p[6]||''}"\n)`;
+  navigator.clipboard.writeText(call).then(()=>{
+    const fb = document.getElementById('copy-feedback');
+    fb.textContent='Copied jamf_policy_set_script ✓';
+    setTimeout(()=>fb.textContent='',2500);
+  });
+}
+
+// Init
+updatePreview();
+</script>
+</body>
+</html>
