@@ -2,86 +2,79 @@
 
 ## Context
 
-This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture. Fleet Recon is the endpoint reconciliation workspace described by the PRD. For non-developers, it is also the productized runtime for the operator’s Claude Code skills: registered workflows and Python tools run behind a prebaked chat window with org credentials, without a CLI.
+This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture.
+
+**Architecture fork (2026-08-29):** the ship MVP is a **thin session host** wrapping Claude Code / Claude Agent SDK, existing org MCP servers, and `asset-ops` skills — the shape already validated in `development-test2`. It is **not** a CrewAI + FastAPI + PostgreSQL + Redis + OIDC enterprise workspace. That stack remains documented below only as **Future Work**. Comparison and rationale: [architecture-fork.md](architecture-fork.md).
 
 The first packaged workflow is **Look up users' devices** (`lookup-user-devices`). See [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
 
-**Selected runtime:** `crewai`
+**Selected runtime:** `claude-agent-sdk`
 
-**Primary language:** Python 3.11+
+**Primary language:** Python 3.11+ (skills/scripts) and TypeScript (chat UI)
 
-**MVP deployment shape:** one web application deployment, one worker deployment, one PostgreSQL database, and one Redis instance. This is intentionally small enough for a pilot while preserving durable state, asynchronous batch work, and real-time collaboration.
+**MVP deployment shape:** one session host (chat UI + Agent SDK process) with connected MCP servers (ServiceNow, Jamf, Intune) and a session-scoped temp/reports directory. No separate worker tier, PostgreSQL, Redis, or productized secret vault.
 
 ## 1. MVP Architecture Philosophy & Principles
 
 ### 1.1 Design Principles
 
-1. **Evidence before inference.** Every finding references persisted source-evidence IDs, source record IDs, retrieval time, status, and correlation ID.
-2. **Agents recommend; application services decide and enforce.** CrewAI agents produce validated structured outputs. Authorization, routing, target scope, confirmation, allowlists, version checks, and connector mutation boundaries are deterministic Python services.
-3. **One server-side workspace state.** Chat cards, canvas rows, action previews, and activity history all read and mutate the same persisted entities.
-4. **Deterministic routing.** Skill binding, sanitization, and deduplication happen before routing. The stored route never changes during a run. Identity lists never enter model context.
-5. **Partial failure is a result state.** A failed connector does not erase successful evidence from other connectors. The chat CSV still downloads.
-6. **Observable by default.** Every request, agent task, connector call, job, event, and action carries a correlation ID and structured status.
-7. **Least privilege.** Read-only collection and analysis are separate from the two allowlisted mutation adapters. Secrets never enter agent context or browser responses.
-8. **Reproducible agent execution.** Crew sessions are short-lived and task inputs are explicit. Persistent business state is in the database, not agent memory.
+1. **Wrap what already works.** MCP connections and asset-ops scripts are the system of action. The product is a non-developer chat window over them, not a second integration platform.
+2. **Host decides; model fills the allowed slot.** Intent → tool-subset and ≤4 vs >4 routing are deterministic host rules. The model cannot add Cortex/Tenable to a device lookup.
+3. **Same output, either path.** Micro MCP lookups and batch scripts both terminate in `chat.csv_preview` with the same row shape.
+4. **Deterministic routing.** Skill binding, sanitization, and deduplication happen before the session is given tools. The stored route never changes during a run.
+5. **Partial failure is a result state.** A failed MCP/script source does not erase successful rows. The CSV still downloads.
+6. **Least privilege per intent.** `allowed_tools` is the intent table, not the full MCP catalog. Secrets stay in MCP server config.
+7. **Batch scripts are host-invoked.** >4 names write a temp CSV and exec `asset_report_build.py` then `asset_report_mdm.py` with a fixed argv. The model does not get unconstrained Bash.
+8. **Evidence before inference.** CSV rows come from MCP/script output, not from model-authored tables.
 
 ### 1.2 MVP Scope
 
 **Included:**
 
-- Copilot Chat and Live Canvas in a desktop-first web UI. Chat is a prebaked skill window (enabled workflow chips), not a generic coding agent.
+- Prebaked chat window (existing React chat is acceptable as a thin client). Skill chips, not a generic coding agent.
 - Typed requests, pasted usernames, and CSV upload, with instruction prose stripped from identity extraction.
-- Sanitization, deduplication, validation, and persisted micro-query/batch routing with `MICRO_QUERY_MAX_SUBJECTS = 4`.
-- Skill-scoped read-only evidence collection. `lookup-user-devices` uses ServiceNow, Jamf Pro, and Microsoft Intune. Cortex XDR and Tenable remain in the connector contract for skills that declare them.
-- Normalized evidence, findings, confidence, source citations, work items, notes, assignments, cleanup state, activity history, filtered CSV export, and Slack-style chat CSV artifacts (preview, copy, download).
-- Three CrewAI agents: Orchestrator, Analysis, and Action/Dispatch.
-- Durable batch jobs with bounded connector concurrency and retry-safe collection.
-- WebSocket collaboration events.
-- Preview, explicit confirmation, allowlist enforcement, idempotency, and audit records for ServiceNow ticket creation and Jamf policy triggers.
-- Basic authentication through an enterprise OIDC provider with Workspace User and Administrator roles; administrator claims gate configuration.
-- Administrator Tool Management, workspace-scoped tool configuration, credential references, and connector health diagnostics.
-- A governed compatibility path for the approved `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` capabilities, packaged from Claude Code `asset-ops` skills into `WorkflowDefinition` + `ToolDefinition` records.
+- Host-side routing: `MICRO_QUERY_MAX_SUBJECTS = 4`; >4 or any CSV → temp CSV + asset-ops scripts.
+- Intent → tool-subset table (device lookup vs app health vs security/vuln).
+- MCP fan-out for ≤4 identities: ServiceNow + Jamf + Intune for device lookup.
+- `asset_report_build.py` → `asset_report_mdm.py` for the batch path (already specified in §2.2 / §2.3).
+- One `chat.csv_preview` renderer (inline table, Copy, Download) for both paths, backed by a session-scoped reports file.
+- Claude Agent SDK session with per-intent `allowed_tools` and MCP servers already configured.
 
-**Explicitly deferred:**
+**Explicitly deferred (former MVP enterprise stack):**
 
+- CrewAI Application Crew, PostgreSQL evidence model, Redis queue, object-storage run CSVs, OIDC, administrator tool/credential/health console, live canvas collaboration, WebSockets, confirmation-gated mutation console (until a write skill is exposed).
 - Autonomous remediation or automatic CMDB deletion/bidirectional synchronization.
-- Additional mutation integrations beyond ServiceNow ticket creation and allowlisted Jamf policies.
 - A full replacement console for any source platform.
-- Multi-region active-active deployment, tenant self-service provisioning, advanced analytics, and long-term agent memory.
-- Automatic identity merging when matching confidence is ambiguous.
-- Malware scanning implementation when the enterprise upload service has not yet been selected; the upload boundary remains designed to support it.
 
 ### 1.3 Technical Architecture Decisions
 
 | Concern | MVP decision | Rationale |
 | --- | --- | --- |
-| Frontend | React + TypeScript, Vite, accessible component primitives, CSS modules or scoped CSS | Supports a responsive split-pane application with typed API contracts and minimal runtime overhead. |
-| Backend API | FastAPI with Pydantic models | Native async support for streaming, WebSockets, connector I/O, and clear schema validation. |
-| Persistence | PostgreSQL | Required for durable query runs, evidence provenance, optimistic concurrency, notes, actions, and append-only audit events. |
-| Batch queue | Redis-backed task queue, implemented with RQ or equivalent approved Python worker library | Keeps batch work out of request processes and is sufficient for a single-pilot deployment. |
-| Eventing | FastAPI WebSocket endpoint backed by Redis pub/sub | Provides workspace-scoped live updates without introducing Kafka for MVP. Persist events before publication. |
-| Agent runtime | CrewAI sequential process | Matches the three-role workflow and makes task context chaining explicit and inspectable. |
-| Object storage | S3-compatible private bucket for immutable sanitized input CSVs and export files | Avoids putting batch payloads in queue messages and supports retention controls. |
-| Connector HTTP | Async HTTP client with per-connector rate limiter and bounded retry policy | Isolates vendor APIs and makes partial completion measurable. |
-| Model output | Structured Pydantic schemas and JSON-only task outputs | Prevents free-form recommendations from becoming executable operations. |
-| Streaming | Server-sent events for chat/run progress; WebSockets for shared canvas events | SSE is simple for one-way chat progress; WebSockets support bidirectional collaboration updates. |
-| Tool registry and configuration | PostgreSQL-backed approved tool definitions plus versioned workspace configurations; Pydantic/JSON Schema validation | Makes script capabilities discoverable and configurable without allowing arbitrary code or parameter injection. |
-| Credential storage | Enterprise secret manager referenced by opaque `CredentialReference` records | Keeps API keys and passwords out of application data, agent context, logs, and browser responses. |
-| Connector health | Read-only `validate_connection` checks with persisted health history and scheduled/on-demand execution | Gives Administrators actionable diagnostics while preventing health checks from becoming mutation or retry paths. |
+| Session host | One process serving the chat UI and a Claude Agent SDK (or Claude Code) session | Matches `development-test2`: skills + MCP, no distributed backend. |
+| Agent runtime | `claude-agent-sdk` coordinator with per-intent `allowed_tools` | Replaces CrewAI. Hooks (`PreToolUse`) enforce the intent table. |
+| Connectors | Existing MCP servers (ServiceNow, Jamf, Intune); Tenable/Cortex only when the intent table says so | Credentials already live in MCP config; no app vault. |
+| ≤4 execution | Parallel MCP tool calls for each identity | Cheap enough for the model under a locked tool list. |
+| >4 execution | Host writes temp CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py` | Token-saving path the scripts were built for; host-invoked, not free Bash. |
+| Result files | Session-scoped temp/reports directory | Same pattern as existing report scripts; no object store for MVP. |
+| Chat render | First-class `chat.csv_preview` (headers, preview rows, row_count, file_ref, copy, download) | Identical renderer for both routes. |
+| Frontend | Keep the existing React chat as a thin client; hide canvas/admin or leave them inert | Non-developers need a window, not a second platform. |
+| Auth (MVP) | Private internal access to the session host; not a productized OIDC/RBAC console | Must not be an open proxy to org MCP. Full OIDC is Future Work. |
+| Future Work platform | FastAPI + PostgreSQL + Redis + OIDC + tool registry + canvas | Former SAD §4; do not build it to ship device lookup. |
 
 ## 2. Multi-Agent System Specification
 
-### 2.1 Application Crew
+### 2.1 Session host (replaces Application Crew for MVP)
 
-The Application Crew is a small CrewAI crew owned by the backend orchestration layer. It is not exposed as an unrestricted autonomous loop. The API and domain services create a bounded crew execution with a specific `run_id`, workspace, permitted tools, and normalized context.
+There is no CrewAI crew in MVP. One coordinator session (Claude Agent SDK) runs inside the session host. Specialized “agents” from the former SAD (Orchestrator / Analysis / Dispatch) are **not** separate CrewAI roles. Routing and tool allowlists are host code.
 
-| Agent | Goal | Inputs | Outputs | Tools and hard boundary |
+| Component | Goal | Inputs | Outputs | Hard boundary |
 | --- | --- | --- | --- | --- |
-| Orchestrator Agent | Coordinate a run that skill matching and routing have already bound; prepare action requests when needed. | `skill_id`, route, `input_count`, connector availability; never the raw name list. | `OrchestratorResult`: status, route, progress messages, requested read operations, action-preview request. | Run store, read-only dispatcher, batch enqueuer, event publisher, action-request creator. Never extracts identities, chooses connectors outside the skill, calls a mutation adapter, reads secrets, or infers confirmation. |
-| Analysis Agent | Compare normalized evidence and produce source-cited discrepancies and next-step playbooks. | Least-privilege normalized evidence references and policy catalog. | `AnalysisResult`: findings, category, severity, confidence, evidence IDs, recommendation, prerequisites, approval requirement. | Evidence reader, findings store, rule catalog. No connector mutation, ticket creation, Jamf policy trigger, or unsupported conclusion. |
-| Action/Dispatch Agent | Construct and execute only an already-confirmed, allowlisted operation. | Selected work items, immutable action request, confirmation and allowlist results. | `DispatchResult`: per-target receipts, final action status, audit references. | Work-item reader, action store, confirmation verifier, allowlist verifier, schema validator, ServiceNow/Jamf adapter, audit writer. Cannot broaden target scope or execute without deterministic preconditions. |
+| Intent + identity preprocessor | Bind intent table row; extract identities; choose ≤4 vs >4 | Raw chat text or CSV | `intent_id`, identity list, `mode`, `allowed_tools` | Must not call MCP or scripts itself except through the paths below |
+| Claude Agent SDK session | Use only `allowed_tools` to fill rows for ≤4, or to present script output for >4 | Preprocessor result, MCP tools if `mode=micro_query` | Structured row list or path to report CSV; user-safe status | Cannot expand `allowed_tools`; cannot invoke unconstrained Bash |
+| Host script runner | >4 or CSV upload | Sanitized username CSV path | Report CSV in session reports dir | Fixed argv: `asset_report_build.py` then `asset_report_mdm.py` (plus `asset_report_app.py` only if intent is app health) |
+| `chat.csv_preview` renderer | Slack-style file card | Normalized rows or report CSV | Preview, copy, download | Same component for both modes |
 
-The application service remains the authority around each agent. For example, an Action/Dispatch task can return a proposed operation, but a domain service must still verify that the persisted action request is unexpired, confirmed by the requester or an authorized user, unchanged, allowlisted, and idempotency-safe before calling a connector. Tool availability is similarly deterministic: a tool must be registered, enabled for the workspace, assigned to the agent, compatible with dependency health, and invoked with a validated configuration snapshot.
+Former Orchestrator/Analysis/Dispatch CrewAI specifications remain Future Work if the enterprise workspace is built later.
 
 ### 2.2 Tool Capability Model
 
@@ -93,113 +86,106 @@ The three supplied scripts are treated as approved capability adapters, not as u
 | `asset_report_mdm` | Step 2. Routes macOS rows to batched Jamf inventory (`GENERAL`, `HARDWARE`) and Windows rows to Intune serial lookup plus managed-device metadata. Preserves duplicate serial rows and marks not-found/lookup-error states explicitly. | Step 1 device evidence; `jamf_batch_size`, `intune_workers`, and max-age policy are bounded worker settings, not unrestricted user flags. | `MdmEvidence` with provider, managed/unmanaged/not-found status, last check-in, compliance, management agent, detail, source record reference, and safe error category. Jamf and Intune calls use separate connector credentials and rate limits. |
 | `asset_report_app` | Step 3. For macOS, resolves an app-specific Jamf extension attribute first and falls back to Jamf application inventory; for Windows, queries Intune managed-app states. Classifies raw status as healthy/unhealthy/unknown and preserves provenance. | Step 1 device evidence; required `app` value; approved per-app signal-map rule; bounded Jamf batch size and Intune worker count. Signal-map rules are versioned configuration, not arbitrary executable logic. | `ApplicationEvidence` with app, raw status, health classification, source, versions/detail, and safe error category. EA ambiguity and fallback source are explicit evidence metadata. |
 
-The scripts currently use CLI arguments, environment variables, `requests`, `pandas`, `PyYAML`, and a shared `fleet_common` module, and they print progress plus optional JSONL summaries. In the product, CLI parsing becomes schema-backed tool configuration; `fleet_common` behavior becomes shared connector/normalization services; progress becomes persisted run events; JSONL summaries become structured metrics; and CSV writes become database/object-store evidence persistence. A temporary worker adapter may preserve the scripts' sequential step ordering during migration, but each step must be independently retryable and checkpointed by `(run_id, subject/device, tool, configuration_version)`.
+The scripts currently use CLI arguments, environment variables, `requests`, `pandas`, `PyYAML`, and a shared `fleet_common` module. **MVP uses them as subprocesses** (batch path) rather than reimplementing them as FastAPI connectors. Do not wrap them in a job queue to ship device lookup. Future Work may still turn CLI flags into schema-backed config if the enterprise workspace is built.
 
 ### 2.3 Script Pipeline and Execution Controls
 
-For a batch run, the worker executes the capabilities as a dependency graph rather than one opaque process:
+For a batch run, the **session host** executes the scripts in order (not a Redis worker):
 
-1. `asset_report_build` consumes the immutable sanitized input CSV and produces the canonical device set. Its ServiceNow state and platform filters are captured in the workspace configuration snapshot.
-2. `asset_report_mdm` consumes only eligible device rows and fans out by platform. Jamf inventory remains batched (default 40, with a lower configured ceiling for API responses that reject larger requests); Intune remains per-device with a bounded concurrency limit (current script default 10).
-3. `asset_report_app` consumes the same device set and an approved app configuration. It runs Jamf extension-attribute resolution before application-inventory fallback and uses Intune managed-app state priority `installed`, `failed`, `notApplicable`, `unknown`.
-4. Normalization persists evidence after each successful subject/source operation. A step failure produces safe per-source error evidence and allows independent platform/source work to continue when dependency policy permits.
-5. Analysis runs after the required evidence steps reach a terminal state, including partial completion. A run records step status, counts, API call telemetry, duration, and the exact tool/configuration versions.
+1. `asset_report_build` consumes the sanitized input CSV and produces the canonical device set.
+2. `asset_report_mdm` consumes eligible device rows and fans out by platform (Jamf batch, Intune per-device) as the scripts already do.
+3. `asset_report_app` runs only when the intent table row is app health.
+4. Script CSV/JSONL output is the result file. The host does not persist a PostgreSQL evidence graph for MVP.
+5. The host then emits `chat.csv_preview` from that file.
 
-The worker must not inherit arbitrary environment values from a user request. Connector sessions resolve credentials from the workspace's active opaque credential reference, and all HTTP calls use connector-owned timeouts, rate limits, bounded retries, and redacted exceptions. Report freshness warnings (`max_age_hours`) are represented as evidence/run warnings, not as a bypass of stale-data policy. Human-readable stdout from the legacy scripts is not an API contract.
+The host must not pass arbitrary user environment into the subprocess. MCP/script credentials come from the existing MCP server config and script env, not from chat. Human-readable stdout is not the chat contract; the report file is.
 
-### 2.4 CrewAI Configuration
+### 2.4 Claude Agent SDK session (MVP)
 
-The implementation must keep agent and task configuration in version-controlled YAML, with secrets and model credentials supplied through environment variables.
+Secrets and model credentials come from environment variables (`ANTHROPIC_API_KEY` and MCP server env). Per-request controls:
 
-```yaml
-# conceptual shape; exact CrewAI adapter syntax is finalized during setup
-crew:
-  process: sequential
-  memory: false
-  max_rpm: configured_per_environment
-  agents:
-    orchestrator:
-      max_iter: 6
-      allow_delegation: false
-    analyst:
-      max_iter: 5
-      allow_delegation: false
-    dispatcher:
-      max_iter: 4
-      allow_delegation: false
-  tasks:
-    - validate_and_route
-    - analyze_evidence
-    - preview_or_dispatch_confirmed_action
-```
+- `allowed_tools`: computed from the intent table (below). Device lookup = ServiceNow + Jamf + Intune MCP tools only.
+- `PreToolUse` hook: reject any tool not on that list (including Tenable/Cortex and unconstrained Bash).
+- Turn/token budget: sized for ≤4 parallel MCP lookups; batch path should not spend turns iterating names.
+- No persistent agent memory across requestors; session files are the retention.
 
-The YAML is configuration, not an authorization policy. Tool registration is performed in Python from explicit allowlists, and mutation tools are unavailable to the Orchestrator and Analysis agents.
+CrewAI YAML (`backend/agents/config/*.yaml`) is not used for MVP. It remains in the repo only as leftover from the enterprise scaffold.
 
 ### 2.5 Task and Turn Orchestration
 
-#### Micro-query
+#### Shared preprocessor
 
-1. FastAPI authenticates the user and creates a correlation ID.
-2. `SkillMatcher` binds a `WorkflowDefinition`. `RequestIntakeService` strips instruction prose, sanitizes and deduplicates identities, rejects invalid input, and persists `QueryRun` with `skill_id` and `mode=micro_query` when `1 <= input_count <= 4` and input is not a CSV.
-3. The worker (not the LLM) invokes the skill’s Python adapters concurrently per identity under connector-specific rate limits.
-4. Each result is normalized and persisted as `SourceEvidence`; connector errors are persisted separately.
-5. When collection reaches a terminal state, the service writes `ResultArtifact` (CSV), emits `chat.artifact` with a capped preview, and upserts canvas work items.
-6. The Orchestrator task, if invoked, receives only validated metadata. The Analysis task may run after artifact publication and must not block the CSV.
+1. Session host accepts chat text or CSV from the thin UI.
+2. Match intent (table in §2.8). Strip instruction prose. Sanitize and deduplicate identities.
+3. If the phrase matches but no identities remain, ask for names. Do not call MCP or scripts.
+4. Route: 1–4 unique identities and not a CSV → `micro_query`. 5+ or any CSV → `batch_automation`. Persist `mode` on the session run record (in-memory or session file is enough).
 
-#### Batch
+#### Micro-query (≤4)
 
-1. Intake applies the same skill binding, validation, and deduplication rules.
-2. For more than four unique identities or any CSV upload, the service creates an immutable sanitized username CSV object and persists its reference on `QueryRun`.
-3. A deterministic job containing `run_id`, object reference, `skill_id`, connector plan, and correlation ID is enqueued. The name list is not copied into crew prompts.
-4. The worker reads the CSV, runs the skill’s tool graph (`asset_report_build` then `asset_report_mdm` for this workflow), checkpoints per-connector/per-subject results, and publishes progress as counts and milestones.
-5. The same `ResultArtifact` + canvas path as micro-query runs after collection reaches a terminal state, including partial completion.
+1. Set `allowed_tools` to the intent row’s MCP tools (device lookup: ServiceNow user/device, Jamf lookup, Intune device lookup — names as in the live MCP server, e.g. `snow_lookup_user_profile`, `snow_lookup_device_details`, Jamf lookup, `intune_lookup_device`).
+2. Run the Agent SDK session so those tools can be called **in parallel per name**. The model may orchestrate the four identities; it may not add tools.
+3. Normalize MCP payloads into the common row shape (user, serial, platform, MDM status, …).
+4. Write the session report CSV and emit `chat.csv_preview`. Do not require canvas or Postgres.
+
+#### Batch (>4 or CSV)
+
+1. Host writes a temp username CSV.
+2. Host subprocess: `asset_report_build.py` then `asset_report_mdm.py` (and `asset_report_app.py` only for app-health intent).
+3. Host reads the script output file, emits the **same** `chat.csv_preview`. The model is not given the name list to iterate.
 
 #### Action flow
 
-The canvas creates an `ActionRequest` preview from selected work items. The Action/Dispatch Agent may validate and summarize the preview, but execution is a separate command. The command performs schema validation, checks current work-item versions and exact target IDs, verifies confirmation expiration and allowlist policy, acquires the idempotency key, calls exactly one permitted connector operation, persists receipts, and emits audit events.
+Deferred. If a write skill is later enabled, confirmation must happen in chat before the host invokes a mutating MCP tool. Do not infer confirmation.
 
 ### 2.6 Context and Output Contracts
 
-Agent context contains IDs and normalized fields only:
+MVP agent context:
 
-- `workspace_id`, `run_id`, `correlation_id`, actor ID, route, sanitized count, and intent metadata.
-- Evidence references and normalized values approved by `redact_for_model`.
-- No credentials, authorization headers, raw vendor responses, upload bytes, or unrestricted query strings.
+- `intent_id`, `mode`, `input_count`, correlation/session id.
+- For ≤4: the identity list **may** be in session context (four names) so MCP tools can be called per name.
+- For >4: identity list is **not** in model context; only “batch job on N names” plus path to the result file after the host finishes.
+- No MCP tokens, raw vendor dumps, or unrestricted query strings in traces.
 
-All task outputs use Pydantic schemas. Invalid output is rejected, logged with a redacted validation error, and retried once with a correction instruction. A second failure marks the task failed and preserves the run's successful evidence.
+Both paths must emit `chat.csv_preview`:
+
+```json
+{
+  "type": "chat.csv_preview",
+  "filename": "devices-<session>-<run>.csv",
+  "headers": ["username", "serial", "hostname", "platform", "cmdb_state", "mdm_provider", "mdm_status", "last_check_in", "compliance", "source_errors"],
+  "preview_rows": [],
+  "row_count": 0,
+  "truncated": false,
+  "file_ref": "session-reports relative path"
+}
+```
+
+Copy and Download use that file. Preview cap: 10 data rows.
 
 ### 2.7 Error Handling, Retry, Cancellation, and Budgets
 
-- Connector retries use bounded exponential backoff, connector-specific rate limits, and only retry operations marked `retry_safe`.
-- A single connector timeout or error creates source-specific error evidence and does not cancel other connectors.
-- Batch jobs are idempotent by `(run_id, subject_id, source)` checkpoint. A retry creates no duplicate evidence or activity event.
-- Cancellation is cooperative. The API marks a run cancellation requested; workers stop starting new subject calls and finish already committed records.
-- Agent tasks have a 60-second micro-query analysis budget and a five-minute batch analysis budget, configurable per environment.
-- A micro-query request targets a 10-second time-to-first-progress event and a 30-second normal completion budget, excluding vendor outages.
-- CrewAI uses no persistent memory for MVP. Each task receives explicit context from the database and previous task output.
-- Token and cost controls include bounded `max_iter`, structured prompts, least-privilege evidence, **identity lists held only in `query_run_input` / object storage**, batch aggregation outside the model, and per-run model/token metrics.
+- MCP/script errors become per-row `source_errors`. Other identities continue.
+- Host subprocess failure: run `failed` or `partial` if a report file still has rows.
+- Cancellation: stop starting new MCP calls / kill the script process if still running; keep files already written.
+- ≤4 target: first progress within 10 seconds; complete within 30 seconds excluding vendor outage.
+- Batch: accept immediately; stream script progress if available; do not poll via extra model turns.
 
-### 2.8 Skill Pack and Workflow Model
+### 2.8 Intent table and skill pack
 
-Claude Code skills are a **packaging source**, not a runtime agent loop. An operator (or later an admin import job) compiles `.claude/skills/<name>/SKILL.md` plus `scripts/` into versioned product objects. The chat window is prebaked: enabled workflows appear as chips; Workspace Users never open SKILL.md or a terminal.
+Claude Code skills **are** the runtime (SKILL.md + scripts + MCP), not a packaging step into Postgres `WorkflowDefinition` rows. The chat window is prebaked: chips map to intent rows. Non-developers never open SKILL.md or a terminal.
 
-| Claude Code artifact | Product object | Runtime rule |
-| --- | --- | --- |
-| `asset-ops/SKILL.md` | `WorkflowDefinition` (`lookup-user-devices`, plus future app-health workflow) | Trigger phrases, description, ordered `tool_ids`, output artifact type |
-| `scripts/asset_report_build.py` | `ToolDefinition` `asset_report_build` | ServiceNow user + `alm_hardware` only |
-| `scripts/asset_report_mdm.py` | `ToolDefinition` `asset_report_mdm` | Jamf (macOS) + Intune (Windows) |
-| `scripts/asset_report_app.py` | `ToolDefinition` `asset_report_app` | **Not** in `lookup-user-devices` |
+| Intent | Example phrasing | MCP / scripts | Forbidden |
+| --- | --- | --- | --- |
+| Device lookup | "look up these users devices" | SN + Jamf + Intune MCP (≤4); `asset_report_build` → `asset_report_mdm` (>4) | Cortex, Tenable, `asset_report_app` |
+| App health | app / extension-attribute asks | Device-lookup set **plus** `asset_report_app` | Cortex, Tenable unless also asked |
+| Security / vuln | vulnerability, exposure, Tenable, Cortex | Device-lookup set **plus** Tenable MCP (Cortex only if the skill declares it) | Unrelated mutation tools |
 
-`lookup-user-devices` tool set is exactly `[asset_report_build, asset_report_mdm]`. Cortex XDR and Tenable adapters exist on the connector contract but are not registered on this workflow.
-
-**Skill matching (deterministic, before any crew task):**
-
-1. Score chat text and optional client `intent` against workspace-enabled `trigger_phrases`.
-2. Strip matched spans and instruction stopwords from the identity extractor.
-3. If identities remain, bind `skill_id` and continue. If the phrase matches but no identities remain, return a user-safe prompt to paste names — do not create a connector run.
-4. CrewAI receives `{skill_id, mode, input_count, correlation_id}` only.
-
-This is the token-saving design: four names are four Python identity lookups; fifty names become an internal CSV consumed by the same adapters. The model does not see either list.
+| Claude Code path | MVP use |
+| --- | --- |
+| `.claude/skills/asset-ops/SKILL.md` | Trigger text and procedure for device lookup |
+| `scripts/asset_report_build.py` | Batch step 1 (and the logic MCP mirrors for ≤4) |
+| `scripts/asset_report_mdm.py` | Batch step 2 |
+| `scripts/asset_report_app.py` | App-health intent only |
 
 ## 3. Frontend Architecture Specification
 
@@ -238,8 +224,8 @@ The desktop layout uses two independently scrollable panels: chat on the left an
 - Empty state lists enabled `WorkflowDefinition` chips. Selecting **Look up users' devices** sets composer intent and helper text ("Paste names; 1–4 look up immediately, 5+ run as a spreadsheet job").
 - Text composer accepts natural-language requests and pasted usernames. The client preview uses the same instruction-stripping rules as the server; the server remains authoritative.
 - A plus menu contains CSV upload and permitted action shortcuts; connector configuration is administrator-only.
-- Messages show correlation ID, run status, progress, partial failures, evidence-cited result cards, **Slack-style `ResultArtifact` file cards**, and action confirmation prompts.
-- Artifact cards show filename, row count, header + up to 10 preview rows, truncation count, Copy CSV, Copy for spreadsheet (TSV), and Download. They are not a second LLM-authored table.
+- Messages show status, partial failures, and a first-class **`chat.csv_preview`** card (filename, row count, header + up to 10 rows, Copy, Download). Both ≤4 MCP and >4 script paths use this component only.
+- Artifact files live in a session-scoped reports directory; the card is not an LLM-authored second table.
 - Upload state shows validation, rejected-count summary, and server-created run ID without echoing sensitive raw content.
 
 **Canvas:**
@@ -262,7 +248,9 @@ Keyboard navigation, visible focus, semantic table headers, accessible labels, c
 
 ## 4. Backend Architecture Specification
 
-### 4.1 Service Boundaries
+**MVP:** the “backend” is the session host described in §1.3 and §2.1 (Claude Agent SDK + MCP + host script runner). The FastAPI/PostgreSQL/Redis layout that follows is **Future Work** for an enterprise workspace. Do not implement it to ship "look up these users devices."
+
+### 4.1 Service Boundaries (Future Work — enterprise workspace)
 
 ```text
 backend/
@@ -531,13 +519,13 @@ User: look up these users devices
 
 1. **Skill bind.** `SkillMatcher` maps the phrase to `lookup-user-devices`. Required tools: `asset_report_build`, `asset_report_mdm`. Cortex, Tenable, and `asset_report_app` are not invoked.
 2. **Identity extract.** Stopwords `look`, `up`, `these`, `users`, `devices` are dropped. Four unique usernames remain. `mode=micro_query`.
-3. **Python lookups (not LLM tool loops).** For each username, ServiceNow resolves `sys_user` and assigned `alm_hardware`. Platform routes each device to Jamf (macOS) or Intune (Windows). Calls run concurrently with per-connector rate limits.
-4. **Chat CSV.** When the run is `completed` or `partial`, the API emits `chat.artifact` for `devices-<short_id>.csv`. The thread shows a Slack-style file card: filename, row count, header, first 10 rows, Copy CSV, Copy for spreadsheet, Download.
-5. **Canvas.** The same joined rows appear as work items. Export uses the same column contract.
+3. Python lookups via MCP (≤4) or host scripts (>4). For each username, ServiceNow resolves user and assigned hardware; platform routes to Jamf or Intune. Cortex and Tenable are not called.
+4. **Chat CSV.** Emit `chat.csv_preview` for a session report file. Slack-style card: filename, row count, header, first 10 rows, Copy, Download.
+5. Canvas is optional Future Work. The requestor gets the CSV in chat without opening a dashboard.
 
-If the paste contains **five or more** names, step 2 stores an internal `username` CSV and step 3 is the batch worker running the same two adapters in order. The LLM still never receives the name list. That is the token-saving split: small sets use per-identity HTTP; large sets use the script pipeline’s CSV contract. Both produce the same artifact schema.
+If the paste contains **five or more** names, the host writes a temp `username` CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py`. The model does not iterate those names. Both paths emit the same `chat.csv_preview`.
 
-Today’s scaffold cannot complete this example: `POST /runs` only sanitizes tokens against a username regex (so instruction words become false identities), routing uses a threshold of 5, CrewAI is not kicked off, and no connector worker exists, so runs stay `queued` with no artifact. Section "Build revision inventory" lists the files that must change.
+Today’s **enterprise scaffold** (FastAPI queue-only runs, CrewAI YAML, no MCP) cannot complete this example. The **session-host MVP** can: preprocessor + MCP/scripts + `chat.csv_preview`. See [architecture-fork.md](architecture-fork.md).
 
 ## 7. Performance & Scalability Specifications
 
@@ -660,39 +648,33 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 
 ## Implementation Guidance for AI Development Agents
 
-1. Create the Python/FastAPI/React project skeleton, dependency policy, `.env.example`, migrations, and local service composition.
-2. Implement canonical schemas, **skill matching**, request sanitization with instruction stripping, deterministic routing at threshold 4, and unit tests before connector breadth.
-3. Implement PostgreSQL repositories, Redis jobs, event envelopes, `ResultArtifact` object storage, and optimistic concurrency.
-4. Build the frontend Chat (skill chips + Slack-style artifact card) and Canvas against typed mock API contracts before backend integration.
-5. Implement read-only connector contracts with fixtures and partial-failure behavior. Wire `lookup-user-devices` to ServiceNow, Jamf, and Intune adapters only.
-6. Add CrewAI YAML configuration that receives `{skill_id, mode, input_count}` only; keep role-scoped tools, structured outputs, and prompt trace hooks.
-7. Integrate the frontend with API/SSE/WebSocket paths and verify collaboration behavior plus CSV preview/copy/download.
-8. Add ActionRequest preview, confirmation, allowlist, idempotency, and only then the ServiceNow/Jamf write adapters.
-9. Run QA acceptance tests, security assessment, dependency audit, and `aamad validate` before delivery packaging.
+1. Point the existing React chat at a session host that runs Claude Agent SDK (or Claude Code) with org MCP servers already configured.
+2. Implement the preprocessor: intent table, instruction stripping, threshold 4, unit tests. Do not start with Postgres.
+3. ≤4: lock `allowed_tools` to SN/Jamf/Intune MCP; call in parallel; normalize to the common row shape.
+4. >4: host-write temp CSV; subprocess the two asset-ops scripts; do not give the model unconstrained Bash.
+5. One `chat.csv_preview` component (preview table, copy, download) for both paths; session-scoped reports directory.
+6. Leave CrewAI YAML, Redis, OIDC, admin credential UI, and canvas collaboration unimplemented for this MVP.
+7. Confirm MCP tool names against the live servers (`snow_lookup_*`, Jamf, `intune_lookup_device`).
+8. Security: the host must not be an open proxy to org MCP; keep a private access boundary even without full OIDC.
 
-### Build revision inventory (this request)
+### Build revision inventory (session-host MVP)
 
-Define-phase artifacts in this change set specify the behavior. Build-phase files that still implement the old contract and must be revised next:
-
-| Area | Files | Required change |
-| --- | --- | --- |
-| Intake / routing | `backend/services.py`, `backend/schemas.py`, `tests/test_api.py` | `MICRO_QUERY_MAX_SUBJECTS = 4`; `skill_id` on runs; instruction-stopword stripping; do not treat "look/up/these/users/devices" as usernames. |
-| Skill catalog | `backend/agents/config/tasks.yaml`, new `backend/tools/` or workflow registry | Register `lookup-user-devices` → `asset_report_build` then `asset_report_mdm`. |
-| Connectors / worker | not yet present (`backend.md` Known Gaps) | Implement adapters from asset-ops scripts; execute on run create instead of leaving `queued`. |
-| Artifacts | new run artifact endpoints | Persist CSV, preview JSON, authenticated download. |
-| Chat UI | `frontend/src/features/chat/parseInput.ts`, `ChatView.tsx`, `Message.tsx`, `Composer.tsx` | Match threshold 4; skill chips; artifact card (preview table, copy, download); stop auto-opening canvas as the only result surface. |
-| Canvas export | `frontend/src/features/canvas/CanvasPanel.tsx` | Export joined device columns, not submitted usernames only. |
-| Docs already aligned | `prd.md`, `sad.md`, `mrd.md`, SFS, user story | Do not reintroduce threshold 5. |
+| Area | Change |
+| --- | --- |
+| Runtime | `aamad.config.yml` / `AAMAD_TARGET_RUNTIME=claude-agent-sdk`. Stop treating CrewAI kickoff as the product. |
+| Host router | New preprocessor + script runner (can live beside or replace `backend/services.py` route/queue behavior). |
+| MCP | Use existing ServiceNow/Jamf/Intune MCP; do not reimplement connectors in FastAPI to ship the example. |
+| Chat UI | `parseInput.ts` threshold 4 + stopwords; skill chips; `chat.csv_preview` card in `Message.tsx`. |
+| Do not build now | Postgres, Redis, OIDC, tool-admin, credential vault, canvas as the primary result surface. |
 
 ## Architecture Validation Checklist
 
-- [x] PRD requirements mapped to architectural components.
-- [x] Three agents defined with least-privilege boundaries.
-- [x] Frontend and backend contracts define compatible run, event, work-item, and action shapes.
-- [x] Secrets are represented only as environment-variable names.
-- [x] MVP and Future Work boundaries are explicit.
-- [x] `AAMAD_TARGET_RUNTIME=crewai` is resolved and recorded in Audit.
-- [x] Durable persistence, queueing, real-time events, optimistic concurrency, and confirmation-gated actions are addressed.
+- [x] Device-lookup example mapped to MCP + scripts + `chat.csv_preview`.
+- [x] Intent → tool-subset table is explicit.
+- [x] ≤4 vs >4 routing specified; batch path reuses SAD §2.2 scripts.
+- [x] Secrets remain in MCP/env names, not chat.
+- [x] Enterprise stack explicitly Future Work.
+- [x] `AAMAD_TARGET_RUNTIME=claude-agent-sdk` is resolved and recorded in Audit.
 
 ## Sources
 
@@ -702,16 +684,16 @@ Define-phase artifacts in this change set specify the behavior. Build-phase file
 - [AAMAD SAD template](../../.cursor/templates/sad-template.md).
 - [AAMAD agent framework overview](../../AGENTS.md).
 - Reviewed capability sources: `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_build.py`, `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_mdm.py`, and `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_app.py`. The requestor’s later path `/Users/nick.sanchez/development-test2/.claude/skills/asset-ops/scripts` was not mounted in this environment; those filenames are treated as the same three capabilities.
-- [SFS lookup-user-devices](sfs/lookup-user-devices.md).
-- Requestor notes 2026-08-29: Claude Code skills for non-developers; 4-name vs CSV-script split; Slack-like CSV preview; automatic ServiceNow + Jamf + Intune lookup.
+- [architecture-fork.md](architecture-fork.md).
+- Claude session-host proposal (2026-08-29): MCP + skills, no CrewAI/Postgres/Redis/OIDC vault for MVP.
 
 ## Assumptions
 
-- The attached PRD is authoritative for the product domain.
-- CrewAI is used as an orchestration runtime, not as a security or authorization boundary.
-- PostgreSQL, Redis, and private object storage are available as managed or containerized pilot dependencies.
-- The enterprise provides an OIDC identity provider and approved non-production connector credentials.
-- The three supplied report scripts are approved starting implementations; their current CLI/CSV behavior is compatibility input to the typed tool adapters, not a permanent public API. "Look them up individually" means per-identity Python connector calls, not LLM-per-name tool use.
+- The attached PRD’s **enterprise** admin/canvas/OIDC requirements are deferred; the requestor goal and architecture-fork.md are authoritative for MVP scope.
+- CrewAI is **not** the MVP runtime. PostgreSQL, Redis, and OIDC are Future Work, not pilot dependencies.
+- MCP servers for ServiceNow, Jamf, and Intune are already configured in the operator’s Claude Code environment (`development-test2`).
+- Exact MCP tool names will be confirmed at implementation time against the live server list.
+- "Look them up individually" for ≤4 means parallel MCP tool calls under a locked allowlist, not unconstrained model Bash.
 - Vendor API permissions and exact field mappings are finalized during the Build integration phase.
 - A single workspace can contain multiple authenticated collaborators, while the MVP remains single-tenant per deployment.
 
@@ -723,13 +705,14 @@ Define-phase artifacts in this change set specify the behavior. Build-phase file
 4. Which ServiceNow ticket type, fields, assignment rules, and approval workflow are required for the pilot?
 5. What retention and deletion periods apply to normalized evidence, raw-response references, input CSVs, exports, and audit events?
 6. Which enterprise upload service provides malware scanning, and is it mandatory for the pilot?
-7. Which model provider, region, data-processing agreement, and token budget are approved for CrewAI?
-8. Are Cortex XDR and Tenable permissions available through an internal integration platform or must direct adapters be built? They stay off `lookup-user-devices` until a skill declares them.
-9. What CSV columns must the pilot spreadsheet include beyond the SFS minimum list?
-10. Are emails, `DOMAIN\sam`, and display names in scope for identity extraction?
+7. Which model provider, region, DPA, and token budget are approved for the Claude Agent SDK session?
+8. Confirm live MCP tool names for ServiceNow, Jamf, and Intune.
+9. What CSV columns must the pilot spreadsheet include beyond `chat.csv_preview` headers?
+10. Session file retention and multi-user isolation on a shared host.
+11. Does app-health / vuln intent ship in the same MVP or only device lookup?
 
 ## Audit
 
 - 2026-08-27 | `system-arch` | `create-sad` | Resolved `AAMAD_TARGET_RUNTIME=crewai` from `aamad.config.yml`; created the MVP Solution Architecture Document from the Fleet Recon PRD, MRD, and SAD template.
 - 2026-08-27 | `system-arch` | `update-sad` | Incorporated updated PRD administrator requirements and reviewed the three report scripts; defined governed capability adapters, pipeline execution, configuration/credential APIs, health diagnostics, RBAC enforcement, and versioned run snapshots.
-- 2026-08-29 | `system-arch` | `create-sfs` / `update-sad` | Packaged Claude Code asset-ops skills as `WorkflowDefinition`; `MICRO_QUERY_MAX_SUBJECTS = 4`; skill-scoped SN/Jamf/Intune lookup; `ResultArtifact` chat CSV; identity lists excluded from model context. Resolved `AAMAD_TARGET_RUNTIME=crewai`. Prompt Trace omitted: specification update, not a runtime model invocation.
+- 2026-08-29 | `system-arch` | `update-sad` | Adopted session-host MVP (`claude-agent-sdk` + MCP + asset-ops scripts). CrewAI/Postgres/Redis/OIDC/admin vault marked Future Work. Intent table, host-invoked batch scripts, `chat.csv_preview`. See architecture-fork.md. Prompt Trace omitted: specification, not a runtime model invocation.

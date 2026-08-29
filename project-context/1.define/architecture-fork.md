@@ -1,0 +1,121 @@
+# Architecture comparison: session host vs enterprise workspace
+
+## Context
+
+This note compares (A) the 2026-08-29 system-arch revision that kept the CrewAI/FastAPI/Postgres SAD and added skill binding, a 4-name threshold, and chat CSV artifacts, with (B) the Claude suggestion to ship a thin Claude Code + MCP session host wrapping the already-working `development-test2` skills.
+
+**Decision:** Ship (B) as MVP. Keep (A)’s functional gaps (intent table, identical CSV renderer, threshold 4) and drop (A)’s platform. The enterprise workspace (Postgres, Redis, OIDC, admin vault, canvas collaboration, CrewAI) is Future Work, not the product that makes Claude Code skills usable by non-developers.
+
+## 1. Where the two proposals already agree (~80%)
+
+| Topic | Both say |
+| --- | --- |
+| Dual-engine routing | Same mechanism as PRD FR-2. Swap `1–5` → `1–4`. Not a new invention. |
+| Batch path | `asset_report_build.py` (ServiceNow identity + hardware) then `asset_report_mdm.py` (Jamf macOS, Intune Windows) is already SAD §2.2 / §2.3. Convert names to CSV and run the script so the model does not touch each row. |
+| Device-lookup sources | ServiceNow + Jamf + Intune only. Not Cortex XDR or Tenable unless a different intent says so. |
+| Output | Both routes must emit the **same** normalized rows and the **same** Slack-style CSV preview + copy + download. Path must be invisible to the requestor. |
+| Intake | Keep FR-1 sanitize / dedupe. Strip instruction prose so "look up these users devices" is not five fake usernames. |
+
+The previous revision overstated the batch path as new work. Claude is correct: that pipeline was already specified.
+
+## 2. The three functional gaps (both identified; Claude’s schema is tighter)
+
+### 2.1 Intent → tool-subset table
+
+The previous revision specified only `lookup-user-devices` → build + mdm. That is necessary but incomplete. Claude’s **table** is the missing contract, because the model must not improvise connectors:
+
+| Intent (examples) | Allowed MCP / scripts | Not allowed |
+| --- | --- | --- |
+| Device lookup ("look up these users devices") | ServiceNow user/device + Jamf + Intune; scripts `asset_report_build` → `asset_report_mdm` | Cortex XDR, Tenable, `asset_report_app` |
+| App health | Device-lookup set **plus** `asset_report_app` | Cortex XDR, Tenable unless also asked |
+| Security / vuln phrasing | Device-lookup set **plus** Tenable (and Cortex only if the skill declares it) | Unrelated mutation tools |
+
+The session host computes `allowed_tools` from this table **before** the model runs. The model does not get to add Tenable because a name “looked security-ish.”
+
+### 2.2 CSV-in-chat render contract
+
+The previous revision added FR-10 / `ResultArtifact` / `chat.artifact`. Claude’s name is better as the UI contract: **`chat.csv_preview`**.
+
+```json
+{
+  "type": "chat.csv_preview",
+  "filename": "devices-<session>-<run>.csv",
+  "headers": ["username", "serial", "platform", "mdm_status"],
+  "preview_rows": [],
+  "row_count": 0,
+  "truncated": false,
+  "file_ref": "session-scoped path or blob"
+}
+```
+
+Frontend: one component for both routes — inline table, Copy, Download. File backing: session-scoped temp/reports directory, same idea as existing `asset_report_html.py` / `asset_coverage.py` writes. Do not invent a second formatter per path. That identical-output rule is a **design principle**, not a CSS detail.
+
+Object storage, Postgres artifact tables, and signed download URLs are Future Work. MVP files live on the session host disk (or an equivalent session temp) and are deleted with the session.
+
+### 2.3 Threshold 4
+
+Agreed. Implementation constant `MICRO_QUERY_MAX_SUBJECTS = 4`.
+
+## 3. The real disagreement: what you are shipping
+
+| | Previous SAD revision (A) | Claude (B) — **MVP** |
+| --- | --- | --- |
+| Runtime | CrewAI sequential crew | Claude Code / Claude Agent SDK session |
+| Connectors | New Python adapters + credential vault | Existing MCP servers (ServiceNow, Jamf, Intune) already connected in `development-test2` |
+| ≤4 names | Host-side Python adapters; **names never in the model** | MCP tools per name **in parallel**; cheap enough for the model to call them under a locked `allowed_tools` list |
+| >4 names | Redis job + object-store CSV | Write temp CSV, invoke `asset_report_build.py` → `asset_report_mdm.py` as a **host subprocess** |
+| Persistence | PostgreSQL evidence model | Session files + chat transcript |
+| Auth | OIDC + Workspace User / Administrator | No productized vault or admin console; credentials stay in MCP server config |
+| UI | Chat + live canvas + settings | Prebaked chat window; canvas/admin are not required to prove the skill |
+| What “revise the SAD” means | Add skills on top of the enterprise system | Replace §1.3 / §2 / §4 with a session host |
+
+(A) was the conservative AAMAD reading of the existing PRD. It does **not** match the stated goal: *Claude Code skills and workflows available to non-developers who just want the interface to work.* That working system is (B).
+
+The FastAPI/React scaffold already in the repo is a prototype of an enterprise workspace. It is not the validated `development-test2` path. Treating it as the MVP keeps you building Postgres, OIDC, and a tool-registry console instead of wrapping what already looks up devices.
+
+## 4. Where Claude is adopted as-is
+
+- Drop CrewAI, Postgres, Redis, OIDC, and the administrator credential vault from **MVP**.
+- Credentials remain in MCP server configs, not an app-managed secret store (PRD FR-7 / FR-8 / FR-9 become Future Work).
+- ≤4: MCP tools (`snow_lookup_user_profile` / `snow_lookup_device_details`, Jamf lookup, `intune_lookup_device`) in parallel, constrained by the intent table.
+- >4: temp CSV + existing asset-ops scripts.
+- Both paths converge on one row shape and one `chat.csv_preview` renderer.
+- Intent table is explicit, not “orchestrator classifies intent.”
+
+## 5. Where Claude is refined (do not copy blindly)
+
+1. **The >4 script must be host-invoked, not unconstrained Bash.** If the model is allowed general `Bash`, it can skip the CSV path or shell out arbitrarily. The session host writes the temp CSV and execs the two scripts with a fixed argv/cwd. The model may be told “batch job started / finished” and must still emit `chat.csv_preview` from the script output file.
+2. **≤4 still uses a locked tool list.** “Let the model do it directly” is acceptable only after the host sets `allowed_tools` from the intent table. Otherwise you reintroduce the original gap (Cortex/Tenable on a device lookup).
+3. **Non-developers still need a chat UI.** “No separate web tiers” means no distributed API/worker/database. It does not mean no UI. The existing React chat can stay as a thin client of the session host. Live canvas, collaboration WebSockets, and admin settings are deferred.
+4. **Someone still has to be allowed to use org MCP credentials.** MVP can be a private internal URL plus a shared session identity, not full OIDC. It cannot be an open unauthenticated proxy to ServiceNow/Jamf/Intune.
+5. **Confirmation-gated mutations (FR-6) are not moot if any skill can write.** Read-only device lookup does not need an action console. Jamf policy / ticket skills still need an explicit confirm step if those skills are exposed. Do not silently drop that because credentials live in MCP.
+
+## 6. What to revise (updated inventory)
+
+**Define (this change set):** SAD §1.2–1.3, §2 (crew → session + MCP + skills), intent table, `chat.csv_preview`, runtime `claude-agent-sdk`; PRD MVP vs Future Work for FR-6–FR-9; SFS processing for MCP vs script; `aamad.config.yml` runtime.
+
+**Build (next, not this note):** replace CrewAI kickoff with a Claude Agent SDK (or Claude Code) session; wire MCP allowlists from the intent table; host-side router (≤4 MCP fan-out, >4 subprocess); one CSV preview component; session-scoped reports directory. Do not implement Postgres/Redis/OIDC/tool-admin to ship the example request.
+
+**Do not build for this example:** administrator credential vault UI, connection-health console, canvas collaboration, CrewAI YAML crew, RQ workers.
+
+## Sources
+
+- Requestor goal: Claude Code skills for non-developers (2026-08-29).
+- Claude suggestion (session host, intent table, `chat.csv_preview`, drop enterprise stack).
+- Prior system-arch revision: skill binding, threshold 4, FR-10 artifacts (functional; platform rejected).
+- [prd.md](prd.md), [sad.md](sad.md), [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
+
+## Assumptions
+
+- `development-test2` MCP connections and asset-ops scripts are the validated implementation, even though that tree is not mounted here.
+- Exact MCP tool names (`snow_lookup_user_profile`, etc.) follow the Claude suggestion and must be confirmed against the live MCP server list at implementation time.
+
+## Open Questions
+
+1. Session host process: Claude Agent SDK behind the existing Vite chat, vs embedding in Claude Code’s own UI.
+2. Session file retention and multi-user isolation on a shared host.
+3. Whether app-health and vuln intents ship in the same MVP or only device lookup.
+
+## Audit
+
+- 2026-08-29 | `system-arch` | `architecture-fork` | Compared enterprise SAD revision with Claude session-host proposal; selected session host as MVP. Resolved runtime target `claude-agent-sdk`. Prompt Trace omitted: specification, not a model invocation.
