@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Brief — {{DATE}}</title>
+<!--
+  TEMPLATE: Sprint Brief
+  Emitted by /brief to ~/work/reports/brief-YYYY-MM-DD.html
+  ARIA fills {{PLACEHOLDERS}} at generation time.
+  CSS is inlined — do not link to base.html.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  a{color:var(--accent);text-decoration:none}
+  header{padding:22px 28px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%);position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  header .sub strong{color:var(--text)}
+  main{max-width:1140px;margin:0 auto;padding:22px 28px 80px}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .small{font-size:12.5px;color:var(--muted)}
+  .grid{display:grid;gap:14px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:800px){.g3{grid-template-columns:1fr}}
+  .card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px;box-shadow:0 1px 2px rgba(44,40,37,.03)}
+  .card h4{margin:0 0 8px;font-size:14px;font-weight:600}
+  .card.highlight{border-left:4px solid var(--accent)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500;margin-right:4px}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.accent{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .event{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
+  .event:last-child{border-bottom:none}
+  .event .ts{color:var(--muted);font-size:12px;white-space:nowrap;min-width:60px}
+  .event .body{flex:1;font-size:13px}
+  .ticket-row{display:flex;align-items:baseline;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)}
+  .ticket-row:last-child{border-bottom:none}
+  .ticket-row .key{font-family:var(--mono);font-size:12px;color:var(--accent);white-space:nowrap}
+  .ticket-row .title{flex:1;font-size:13px}
+  .ticket-row .status{font-size:11px;color:var(--muted)}
+  .verdict{padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#EDE8FF 0%,var(--surface) 100%);border:1px solid var(--border);border-left:4px solid var(--accent);margin:8px 0 18px}
+  .verdict strong{color:var(--accent)}
+  .stat{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+  .stat .s{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px;min-width:100px}
+  .stat .s b{display:block;font-size:18px;color:var(--accent);font-weight:700}
+  .stat .s span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+  .copy-back{background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-top:28px}
+  .copy-back h3{margin-top:0;color:var(--accent)}
+  .btn{background:var(--accent);color:#fff;border:none;padding:6px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:5px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  ul{padding-left:18px} li{margin:4px 0}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  .deep-work{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:8px 12px;margin:6px 0;font-size:13px}
+  .deep-work .window{font-weight:600;color:var(--accent)}
+  .boss-alert{background:#fff3f3;border:1px solid #e0b0b0;border-radius:7px;padding:8px 12px;margin:6px 0;font-size:13px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{MODE_EMOJI}} {{MODE}} · {{DAY_DATE}}</h1>
+  <div class="sub">Sprint: <strong>{{SPRINT_NAME}}</strong> · Day {{SPRINT_DAY}}/{{SPRINT_TOTAL}} · Generated {{TIME}}</div>
+</header>
+
+<main>
+
+  <!-- STAT STRIP -->
+  <div class="stat">
+    <div class="s"><b>{{IN_PROGRESS_COUNT}}</b><span>In Progress</span></div>
+    <div class="s"><b>{{TODO_COUNT}}</b><span>To Do</span></div>
+    <div class="s"><b>{{EVENTS_COUNT}}</b><span>Meetings today</span></div>
+    <div class="s"><b>{{DEEP_WORK_HOURS}}h</b><span>Deep work</span></div>
+  </div>
+
+  <!-- THREE-COLUMN LAYOUT -->
+  <div class="grid g3">
+
+    <!-- CALENDAR -->
+    <div class="card">
+      <h4>📅 Today's Calendar</h4>
+      <!-- ARIA fills event rows -->
+      <!-- Example row (replace with real data):
+      <div class="event"><span class="ts">10:00</span><span class="body">GIO Standup</span></div>
+      -->
+      {{CALENDAR_EVENTS}}
+
+      <div style="margin-top:10px">
+        <!-- ARIA identifies 1h+ gaps and lists them -->
+        {{DEEP_WORK_WINDOWS}}
+      </div>
+    </div>
+
+    <!-- SPRINT STATUS -->
+    <div class="card">
+      <h4>🎫 Sprint Tickets</h4>
+      <div style="margin-bottom:10px">
+        <span class="small" style="text-transform:uppercase;letter-spacing:.06em;font-weight:600;font-size:11px">In Progress</span>
+        <!-- ARIA fills ticket rows -->
+        {{IN_PROGRESS_TICKETS}}
+      </div>
+      <div>
+        <span class="small" style="text-transform:uppercase;letter-spacing:.06em;font-weight:600;font-size:11px">To Do</span>
+        {{TODO_TICKETS}}
+      </div>
+    </div>
+
+    <!-- PRIORITY RECOMMENDATION -->
+    <div class="card highlight">
+      <h4>🎯 Pick Up First</h4>
+      <!-- ARIA fills this based on sprint + calendar context -->
+      {{PRIORITY_RECOMMENDATION}}
+      {{BOSS_ALERT}}
+    </div>
+
+  </div>
+
+  <!-- YESTERDAY'S CONTEXT -->
+  <h3>Yesterday's Context</h3>
+  <div class="card">
+    {{YESTERDAY_CONTEXT}}
+  </div>
+
+  <!-- SKILL UPDATES (omit section if no updates needed) -->
+  {{SKILL_UPDATES_SECTION}}
+
+  <!-- EMAIL (omit if unavailable) -->
+  {{EMAIL_SECTION}}
+
+  <!-- IDEAS AGING (omit if nothing over 14 days) -->
+  {{IDEAS_SECTION}}
+
+  <!-- COPY-BACK -->
+  <div class="copy-back">
+    <h3>Continue in ARIA</h3>
+    <pre id="cbtext">{{COPY_BACK_PROMPT}}</pre>
+    <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('cbtext').innerText).then(()=>{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy prompt',2000)})">Copy prompt</button>
+    <button class="btn ghost" onclick="window.print()">Save as PDF</button>
+  </div>
+
+</main>
+</body>
+</html>

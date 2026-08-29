@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{{TITLE}}</title>
+<!--
+  TEMPLATE: Asset Enrichment Report
+  Rendered by scripts/asset_report_html.py from input/output/asset_report.csv.
+  Deliberately plain: counts, one table, checkbox facets. No Jira framing, no
+  remediation prose, no copy-back block -- the CSV and the skill own that.
+  Facets and table columns are generated, so this works for any app column set.
+  CSS/JS inlined -- self-contained file.
+-->
+<style>
+  :root{
+    --bg:#FAF8F5;--surface:#F0EDE8;--border:#D4CFC7;--muted:#8A837A;
+    --text:#2C2825;--accent:#4C00FF;--accent-hover:#3800CC;
+    --good:#4A6B3A;--warn:#C28829;--bad:#A23E2A;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.6 var(--sans)}
+  header{padding:22px 28px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fff 0%,var(--bg) 100%);position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em}
+  header .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+  header .sub strong{color:var(--text)}
+  nav{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:var(--sans);transition:all .15s}
+  nav button:hover{color:var(--text);border-color:var(--muted)}
+  nav button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main{max-width:1250px;margin:0 auto;padding:22px 28px 80px}
+  section{display:none;animation:fade .18s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  h2{font-size:18px;margin:4px 0 14px;font-weight:600}
+  h3{font-size:11.5px;color:var(--accent);margin:22px 0 10px;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .stat{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 18px}
+  .stat .s{background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:110px}
+  .stat .s b{display:block;font-size:22px;color:var(--accent);font-weight:700}
+  .stat .s b.green{color:var(--good)}
+  .stat .s b.red{color:var(--bad)}
+  .stat .s b.yellow{color:var(--warn)}
+  .stat .s span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+  .verdict{padding:14px 18px;border-radius:10px;background:linear-gradient(135deg,#EDE8FF 0%,var(--surface) 100%);border:1px solid var(--border);border-left:4px solid var(--accent);margin:8px 0 16px;font-size:13.5px}
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{background:var(--surface);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface)}
+  td.num,th.num{text-align:right}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--surface);font-weight:500}
+  .pill.macos{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .pill.windows{color:#fff;background:#2E6FA3;border-color:#2E6FA3}
+  .pill.other{color:#fff;background:var(--muted);border-color:var(--muted)}
+  .pill.good{color:#fff;background:var(--good);border-color:var(--good)}
+  .pill.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .pill.warn{color:#fff;background:var(--warn);border-color:var(--warn)}
+  .pill.none{color:var(--muted);background:var(--surface)}
+  .btn{background:var(--accent);color:#fff;border:none;padding:7px 14px;border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--sans);transition:background .15s;margin-right:5px;margin-top:10px}
+  .btn:hover{background:var(--accent-hover)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+  .btn.ghost:hover{background:var(--surface)}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+  .search{flex:1;min-width:200px;max-width:340px;padding:7px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:var(--sans);background:#fff}
+  .search:focus{outline:none;border-color:var(--accent)}
+  .rowcount{color:var(--muted);font-size:12px;margin:10px 0}
+  .rowcount b{color:var(--text)}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:after{content:" \2195";color:var(--muted);font-size:10px}
+  th.sort-asc:after{content:" \2191";color:var(--accent)}
+  th.sort-desc:after{content:" \2193";color:var(--accent)}
+  /* Checkbox facets */
+  .facets{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+  .facet{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 13px;min-width:190px;flex:1 1 190px}
+  .facet .fh{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:7px}
+  .facet .fh span{font-size:10.5px;color:var(--accent);text-transform:uppercase;letter-spacing:.09em;font-weight:600}
+  .facet .fh button{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;font-family:var(--sans);padding:0;text-decoration:underline}
+  .facet .fh button:hover{color:var(--text)}
+  .facet label{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:2px 0;cursor:pointer}
+  .facet label:hover{color:var(--accent)}
+  .facet input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0;flex:0 0 auto;cursor:pointer}
+  .facet label .n{margin-left:auto;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+  .facet label.off .txt{color:var(--muted);text-decoration:line-through}
+  /* Coverage signalling: a row belonging to someone with no working machine gets a
+     red edge, and a failing row whose owner is already covered is dimmed so it stops
+     reading as urgent. The point is that neither needs a filter to be noticed. */
+  tr.uncovered td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
+  tr.straggler{opacity:.62}
+  tr.straggler:hover{opacity:1}
+  .ratio{font-variant-numeric:tabular-nums;font-weight:600}
+  .cnote{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
+  .serials{font-family:var(--mono);font-size:10.5px;color:var(--muted);word-break:break-all}
+  .tbl-wrap{overflow-x:auto}
+  .small{color:var(--muted);font-size:12px}
+  .note{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--warn);border-radius:8px;padding:10px 14px;font-size:12.5px;margin:14px 0}
+  tr.hidden{display:none}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{TITLE}}</h1>
+  <div class="sub">
+    Source <strong>{{SOURCE}}</strong> &middot;
+    Generated <strong>{{GENERATED}}</strong> &middot;
+    Data pulled <strong>{{DATA_AS_OF}}</strong> &middot;
+    <strong>{{USER_COUNT}}</strong> users &middot; <strong>{{DEVICE_COUNT}}</strong> devices
+  </div>
+  <nav id="nav">{{NAV_TABS}}</nav>
+</header>
+
+<main>
+
+<!-- SUMMARY — content differs by mode (coverage-framed vs. bare/neutral), but the
+     stat-tile + breakdown-table shell is shared; the verdict-block placeholder below
+     is the whole verdict box or an empty string, since bare mode has no coverage
+     verdict to show. -->
+<section id="summary" class="active">
+  <div class="stat">{{STAT_TILES}}</div>
+  {{VERDICT_BLOCK}}
+  {{BREAKDOWNS}}
+</section>
+
+<!-- USERS — coverage-framed mode only. Bare mode (only Step 1 has run, no MDM/App
+     Status columns yet) has no per-user verdict to roll up, so this is the whole
+     empty string there and the Users nav button is left out of the nav-tabs
+     placeholder above too. -->
+{{USERS_SECTION}}
+
+<!-- DEVICES — coverage-framed mode gets the full column set + facets; bare mode
+     gets device-audit's old neutral flat table (Serial/Username/Platform/Model/
+     State/Substate/Notes, one Platform facet, no verdict pills). Either way this
+     is the only always-present tab besides Summary. -->
+{{DEVICES_SECTION}}
+
+</main>
+
+<!-- Export payloads. CSV is generated from these, never scraped from the table: a
+     cell may hold a pill plus a sub-note, and textContent would glue them into one
+     unusable value. Row order matches data-i on each <tr>. -->
+{{EXPORT_PAYLOAD}}
+
+<script>
+/* Tabs */
+(function(){
+  const tabs=document.querySelectorAll('#nav button');
+  const secs=document.querySelectorAll('main section');
+  tabs.forEach(b=>b.addEventListener('click',()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    secs.forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    document.getElementById(b.dataset.tab).classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+  }));
+})();
+
+/* One implementation drives both the Users and Devices tables. */
+function initTable(id){
+  const table=document.getElementById(id);
+  if(!table) return;
+  const rows=Array.from(table.querySelectorAll('tbody tr'));
+  const search=document.querySelector('[data-search-for="'+id+'"]');
+  const rowcount=document.querySelector('[data-count-for="'+id+'"]');
+  const boxes=Array.from(document.querySelectorAll('[data-facets-for="'+id+'"] input[type=checkbox]'));
+
+  /* A row shows when it matches EVERY facet group (AND) and any checked value
+     within a group (OR). An entirely unchecked group is treated as "no filter"
+     rather than "hide everything", which is the less surprising behaviour. */
+  function applyFilter(){
+    const q=search.value.trim().toLowerCase();
+    const want={};
+    boxes.forEach(b=>{
+      (want[b.dataset.facet] = want[b.dataset.facet] || {checked:new Set(),any:false});
+      if(b.checked){ want[b.dataset.facet].checked.add(b.value); want[b.dataset.facet].any=true; }
+    });
+    let visible=0;
+    rows.forEach(r=>{
+      let ok=true;
+      for(const facet in want){
+        const g=want[facet];
+        if(!g.any) continue;
+        if(!g.checked.has(r.dataset[facet]||'')){ ok=false; break; }
+      }
+      if(ok && q) ok = r.textContent.toLowerCase().includes(q);
+      r.classList.toggle('hidden', !ok);
+      if(ok) visible++;
+    });
+    rowcount.innerHTML='<b>'+visible+'</b> of '+rows.length+' rows shown';
+    boxes.forEach(b=>b.closest('label').classList.toggle('off',!b.checked));
+  }
+
+  boxes.forEach(b=>b.addEventListener('change',applyFilter));
+  if(search) search.addEventListener('input',applyFilter);
+
+  document.querySelectorAll('[data-facets-for="'+id+'"] .fh button').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const facet=btn.dataset.facet;
+      const group=boxes.filter(b=>b.dataset.facet===facet);
+      const allOn=group.every(b=>b.checked);
+      group.forEach(b=>b.checked=!allOn);
+      applyFilter();
+    });
+  });
+
+  const reset=document.querySelector('[data-reset-for="'+id+'"]');
+  if(reset) reset.addEventListener('click',()=>{
+    boxes.forEach(b=>b.checked=true);
+    if(search) search.value='';
+    applyFilter();
+  });
+
+  /* Sort */
+  const headers=Array.from(table.querySelectorAll('th.sortable'));
+  let state={col:null,dir:1};
+  headers.forEach(h=>h.addEventListener('click',()=>{
+    const col=parseInt(h.dataset.col,10);
+    const dir=(state.col===col)?-state.dir:1;
+    state={col,dir};
+    headers.forEach(x=>x.classList.remove('sort-asc','sort-desc'));
+    h.classList.add(dir===1?'sort-asc':'sort-desc');
+    const tbody=table.querySelector('tbody');
+    rows.slice().sort((a,b)=>{
+      const av=(a.children[col]?.textContent||'').trim().toLowerCase();
+      const bv=(b.children[col]?.textContent||'').trim().toLowerCase();
+      return av<bv?-dir:av>bv?dir:0;
+    }).forEach(r=>tbody.appendChild(r));
+  }));
+
+  /* Copy / export -- always scoped to what is currently visible */
+  const shown=()=>rows.filter(r=>!r.classList.contains('hidden'));
+  function flash(btn,label){const o=btn.textContent;btn.textContent=label;setTimeout(()=>btn.textContent=o,1500);}
+  function cell(r,i){return (r.children[i]?.textContent||'').trim();}
+
+  document.querySelectorAll('[data-copy-for="'+id+'"]').forEach(btn=>{
+    btn.addEventListener('click',function(){
+      let v;
+      if(btn.dataset.copyAttr){
+        /* Space-separated serial list carried on the row, e.g. every device a user
+           still needs work on -- flattened so one click yields a remediation set. */
+        v=shown().flatMap(r=>(r.dataset[btn.dataset.copyAttr]||'').split(/\s+/)).filter(Boolean);
+      } else {
+        v=shown().map(r=>cell(r,parseInt(btn.dataset.copyCol,10))).filter(x=>x && x!=='—');
+      }
+      v=[...new Set(v)];
+      navigator.clipboard.writeText(v.join('\n')).then(()=>flash(this,'Copied '+v.length+' ✓'));
+    });
+  });
+
+  const payloadEl=document.getElementById('export-'+id);
+  const payload=payloadEl?JSON.parse(payloadEl.textContent):null;
+  const exportBtn=document.querySelector('[data-export-for="'+id+'"]');
+  if(exportBtn&&payload) exportBtn.addEventListener('click',function(){
+    const picked=shown().map(r=>payload[parseInt(r.dataset.i,10)]).filter(Boolean);
+    if(!picked.length){ flash(this,'Nothing to export'); return; }
+    const head=Object.keys(payload[0]);
+    const esc=v=>{
+      v=(v===null||v===undefined)?'':String(v);
+      /* Guard against CSV/formula injection: a value opening with =,+,-,@ is executed
+         by Excel and Sheets on open. Serials and status strings are external data. */
+      if(/^[=+\-@\t\r]/.test(v)) v="'"+v;
+      return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;
+    };
+    const lines=[head.map(esc).join(',')].concat(
+      picked.map(o=>head.map(h=>esc(o[h])).join(',')));
+    /* BOM + CRLF so Excel on Windows opens UTF-8 correctly instead of mojibake. */
+    const blob=new Blob(['﻿'+lines.join('\r\n')+'\r\n'],
+                        {type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=table.dataset.export||'export.csv';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    flash(this,'Exported '+picked.length+' ✓');
+  });
+
+  applyFilter();
+}
+
+initTable('user-table');
+initTable('device-table');
+</script>
+</body>
+</html>

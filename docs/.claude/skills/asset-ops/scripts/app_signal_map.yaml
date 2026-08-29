@@ -1,0 +1,103 @@
+# Optional per-app overrides for asset_report_app.py (step 3).
+#
+# This file is NOT required. Step 3 resolves apps dynamically: it matches the
+# --app token against the extension-attribute names Jamf actually returns, then
+# falls back to the installed-applications inventory. Only add an entry here when
+# that isn't good enough — specifically when:
+#   - the app token matches several EA names and you need to pin one, or
+#   - the generic healthy/unhealthy word lists misread this app's status strings.
+#
+# Shape is fleet-cli's StatusRule (src/fleet_cli/data/default_statuses.yaml) so
+# rules can be moved between the two:
+#   key                : matched against --app (normalized: casefold, dashes unified)
+#   label              : also matched against --app; used in log output
+#   paths              : EA names to prefer, "<prefix>.<EA name>" — prefix ignored,
+#                        only the part after the first '.' is matched, dash-insensitively
+#   healthy_contains   : substrings meaning healthy
+#   unhealthy_contains : substrings meaning unhealthy — checked FIRST, because
+#                        "ERROR - Installed (Not Enrolled)" contains both signals
+#
+# Paths below use the live DocuSign EA names, which differ from fleet-cli's
+# defaults (ours are prefixed "Compliance - "). Note Jamf mixes hyphens and
+# en-dashes across EA names; matching normalizes both, so either form works here.
+
+statuses:
+  - key: zscaler
+    label: Zscaler
+    paths:
+      - extensionAttributes.Compliance - Zscaler Status
+    # Plain "installed" is safe here even though "not installed" contains it:
+    # unhealthy_contains is evaluated first. Windows reports a bare "installed",
+    # so a narrower "ok - installed" would leave the whole Windows fleet "unknown".
+    healthy_contains:
+      - installed
+      - enrolled
+      - connected
+    unhealthy_contains:
+      - error
+      - not installed
+      - not enrolled
+      - disabled
+      - not running
+      - missing
+
+  - key: slack
+    label: Slack
+    paths:
+      - extensionAttributes.Compliance - Slack
+    healthy_contains:
+      - installed
+      - ok
+      - up to date
+    unhealthy_contains:
+      - requires update
+      - not installed
+      - error
+      - missing
+
+  - key: nessus
+    label: Nessus
+    # Five EAs contain "nessus" (Plugins Loaded, Agent Installed, Agent Health,
+    # Agent version, and the en-dashed "Compliance – Nessus – Connectivity"), so the
+    # bare token is ambiguous. Pin the one that answers "is the agent installed".
+    paths:
+      - extensionAttributes.Compliance Testing - Nessus - Agent Installed
+    healthy_contains:
+      - agent installed
+      - plugins ok
+    unhealthy_contains:
+      - error
+      - not installed
+      - missing
+
+  - key: cortex
+    label: Cortex
+    paths:
+      - extensionAttributes.Compliance - Cortex Status
+    healthy_contains:
+      - running
+      - connected
+      - enabled
+    unhealthy_contains:
+      - not running
+      - disabled
+      - missing
+
+  # The EA name is two words ("Global Protect") while the app is one
+  # ("GlobalProtect"), so substring matching can never bridge it — this entry is
+  # required, not just an optimization.
+  - key: globalprotect
+    label: Global Protect
+    paths:
+      - extensionAttributes.Compliance - Global Protect Status
+    healthy_contains:
+      - ok
+      - connected
+      - vpn
+    unhealthy_contains:
+      - error
+      - disconnected
+      - not connected
+      - not installed
+      - not running
+      - missing
