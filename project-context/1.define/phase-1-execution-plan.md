@@ -34,9 +34,9 @@ Produce a build-ready, testable MVP backlog from the MRD and PRD. Work is priori
 | ID | User Story | Acceptance Criteria | Priority |
 | --- | --- | --- | --- |
 | FR-ROUTE-01 | As an operator, I can paste usernames or upload a CSV for investigation. | Input validation, sanitization, deduplication, rejection feedback, and upload constraints are implemented. | P0 |
-| FR-ROUTE-02 | As the platform, I must route small and large requests predictably. | 1-5 normalized usernames use micro-query; >5 or CSV uses batch; decision is persisted and fully unit-tested. | P0 |
+| FR-ROUTE-02 | As the platform, I must route small and large requests predictably. | 1-4 normalized identities use micro-query; >4 or CSV uses batch; instruction prose is stripped; decision is persisted and fully unit-tested. | P0 |
 | FR-ROUTE-03 | As an operator, I need batch work that progresses without blocking the UI. | A durable job creates internal CSV payload reference, follows rate limits, supports safe retry, and emits progress events. | P0 |
-| FR-ROUTE-04 | As an operator, I need clear in-chat status. | Chat begins streaming permitted micro-query cards and displays batch status, partial failures, and correlation ID. | P1 |
+| FR-ROUTE-04 | As an operator, I need clear in-chat status and a spreadsheet-ready result. | Chat streams permitted micro-query cards, batch status, partial failures, correlation ID, and a Slack-style CSV artifact (preview, copy, download). | P0 |
 
 ### Epic 4: Connector Contract and Read-Only Evidence
 
@@ -127,3 +127,4 @@ Produce a build-ready, testable MVP backlog from the MRD and PRD. Work is priori
 ## Audit
 
 - 2026-08-26 | product-mgr | Created prioritized MVP execution plan from MRD and PRD.
+- 2026-08-29 | system-arch | Raised FR-ROUTE-04 to P0; aligned FR-ROUTE-02 with 4-identity threshold and chat CSV artifact.

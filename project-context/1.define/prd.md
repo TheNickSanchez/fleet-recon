@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This PRD defines the MVP of Fleet Recon: a collaborative endpoint reconciliation workspace that collects telemetry from ServiceNow, Cortex XDR, Jamf Pro, Microsoft Intune, and Tenable; displays normalized evidence on a live canvas; and drives approved remediation actions.
+This PRD defines the MVP of Fleet Recon: a prebaked chat workspace that packages the operator’s Claude Code skills and workflows so non-developers can run them against org systems without using a CLI. The first skill is endpoint device lookup. The workspace collects telemetry from ServiceNow, Cortex XDR, Jamf Pro, Microsoft Intune, and Tenable; displays normalized evidence in chat (including a Slack-style CSV preview) and on a live canvas; and drives approved remediation actions.
 
 ## 2. Users and Permissions
 
@@ -19,7 +19,7 @@ Tool execution is always limited by the intersection of the tool's global defini
 
 The desktop-first application has two independently scrollable panels:
 
-- **Copilot Chat, left:** accepts natural-language requests, pasted usernames, and CSV uploads; renders lightweight result cards, run status, errors, and action-confirmation prompts. A `+` menu exposes CSV upload and permitted integration actions; connector configuration is restricted to the designated administrator.
+- **Copilot Chat, left:** a prebaked skill window. Empty state lists enabled skills (for example **Look up users' devices**) as chips. The composer accepts natural-language requests, pasted usernames, and CSV uploads. The server binds the message to a registered skill, extracts identities separately from instruction prose, and renders run status, errors, action-confirmation prompts, and Slack-style result-file cards (CSV preview, copy, download). A `+` menu exposes CSV upload and permitted integration actions; connector configuration is restricted to the designated administrator. Workspace Users never see SKILL.md, scripts, or credentials.
 - **Administrator Settings:** visible only to Administrators; provides Tool Management and Credential Management views with workspace scope, save/test status, validation errors, and audit-safe activity history. Secret values are write-only after initial submission and are never rendered in the browser.
 - **Live Canvas Dashboard, right:** displays shared filter controls, a user table, a device/evidence table or drill-down, assignment and note state, CMDB cleanup status, run activity, and CSV export.
 
@@ -47,7 +47,7 @@ sequenceDiagram
   participant Orchestrator
   participant Connectors as Python Connectors
   participant Canvas as Live Canvas
-  User->>Chat: Enter 1-5 usernames
+  User->>Chat: Skill request plus 1-4 usernames
   Chat->>Orchestrator: submit request
   Orchestrator->>Orchestrator: sanitize, deduplicate, count
   Orchestrator->>Connectors: invoke targeted source lookups
@@ -61,7 +61,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-  A[Paste more than 5 usernames or upload CSV] --> B[Validate, sanitize, deduplicate]
+  A[Paste more than 4 usernames or upload CSV] --> B[Validate, sanitize, deduplicate]
   B --> C[Create immutable run input CSV]
   C --> D[Enqueue deterministic parallel Python job]
   D --> E[Fan out under connector rate limits]
@@ -92,29 +92,30 @@ sequenceDiagram
 
 ### FR-1: Request Intake and Validation
 
-- The system accepts typed requests, pasted usernames, and CSV uploads.
+- The system accepts typed requests, pasted usernames, and CSV uploads. Instruction prose (for example "look up these users devices") is classified as skill intent and is not counted as an identity.
 - Sanitization trims whitespace, strips unsupported control characters, normalizes line endings, extracts allowed username values, removes duplicates, and reports rejected input without exposing sensitive raw content in logs.
 - CSV uploads must enforce a configurable file-size and row-count limit, allowed MIME/type policy, required username column mapping, encoding handling, and malware scanning if the enterprise upload service requires it.
-- Every accepted request creates a query run with a UUID, initiator, input type, sanitized count, routing decision, status, and correlation ID.
+- Every accepted request creates a query run with a UUID, initiator, bound `skill_id`, input type, sanitized identity count, routing decision, status, and correlation ID.
 
 ### FR-2: Dual-Engine Routing
 
 | Condition | Required Route | Behavior |
 | --- | --- | --- |
-| 1-5 unique usernames and no CSV upload | Micro-query | Orchestrator parses intent, calls targeted Python connector methods, and streams compact chat cards while persisting equivalent evidence to the canvas. |
-| More than 5 unique usernames | Batch automation | Create internal sanitized CSV payload, enqueue deterministic parallel Python job, publish progress, and return aggregated results. |
+| 1-4 unique identities and no CSV upload | Micro-query | Bound skill selects registered Python connector methods. Each identity is looked up concurrently (not by an LLM looping tools). Stream compact chat cards and persist equivalent evidence to the canvas. Names are not placed in model context. |
+| More than 4 unique identities | Batch automation | Create internal sanitized username CSV, enqueue the skill’s deterministic Python job (the Claude Code scripts behind registered tools), publish progress, and return aggregated results. Names are not placed in model context. |
 | Any CSV upload | Batch automation | Validate and transform upload to internal CSV payload before job enqueue. |
-| Invalid or empty normalized input | Reject | Explain validation error and do not call connectors or agents. |
+| Invalid or empty normalized identities | Reject | Explain validation error and do not call connectors or agents. |
 
-Routing is evaluated after sanitization and deduplication. The decision must be stored and testable. A request never changes route mid-run; a retry creates a new run referencing the original run.
+Routing is evaluated after skill binding, sanitization, and deduplication. The constant is `MICRO_QUERY_MAX_SUBJECTS = 4`. The decision must be stored and testable. A request never changes route mid-run; a retry creates a new run referencing the original run. Skill binding selects which connectors run; routing only selects micro-query vs batch execution of that skill.
 
 ### FR-3: Connector Collection
 
+- Each registered skill declares its connector set. The MVP skill **Look up users' devices** (`lookup-user-devices`) always uses ServiceNow, Jamf Pro, and Microsoft Intune together; it does not call Cortex XDR, Tenable, or `asset_report_app`.
 - ServiceNow supplies CMDB record, assignment/owner, lifecycle, and ticket context.
-- Cortex XDR supplies active endpoint telemetry and operating-system classification.
+- Cortex XDR supplies active endpoint telemetry and operating-system classification (available to skills that declare it; not part of `lookup-user-devices`).
 - Jamf Pro supplies macOS enrollment, MDM compliance, and permitted policy state.
 - Microsoft Intune supplies Windows enrollment, MDM compliance, and management state.
-- Tenable supplies vulnerability/compliance scan findings and last-seen status.
+- Tenable supplies vulnerability/compliance scan findings and last-seen status (available to skills that declare it; not part of `lookup-user-devices`).
 - Connector adapters implement a shared Python contract: `validate_connection`, `fetch_by_identity`, `normalize`, `rate_limit`, `retry_safe`, and `redact_for_model`.
 - Each response preserves source system, source record ID, retrieval timestamp, request correlation ID, status, raw-response retention reference, and normalized payload version.
 - Individual connector failures must not invalidate evidence from other sources. The run reports partial completion and error detail appropriate to the user's role.
@@ -146,7 +147,7 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 ### FR-7: Administrator Tool Management and Extensibility
 
 - The system maintains a versioned registry of approved Python tools/scripts. Each registry entry includes a stable tool ID, display name, purpose, owning integration, version, implementation reference, input/output schema, permitted agents, read-only or state-changing classification, and lifecycle status.
-- The initial registry must support the capabilities represented by `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` without exposing arbitrary filesystem execution or allowing an administrator to upload unreviewed code through the product UI.
+- The initial registry must support the capabilities represented by `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` without exposing arbitrary filesystem execution or allowing an administrator to upload unreviewed code through the product UI. These map from Claude Code `/.claude/skills/asset-ops/scripts` at packaging time into `ToolDefinition` records; runtime execution uses the registry, not a live SKILL.md read.
 - An Administrator can view all registered tools, enable or disable each tool per workspace, and assign each enabled tool to one or more agents. Disabled tools and tools not assigned to the invoking agent cannot be selected or executed.
 - Tool assignment and enablement are workspace-scoped, versioned, auditable, and server-enforced. The UI must show effective status, assignment, version, and last validation result.
 - An Administrator can edit only schema-declared configuration parameters. The UI must support typed values, defaults, descriptions, allowed values, safe bounds, and sensitive-parameter markers; examples include ServiceNow state filters and platform allowlists.
@@ -169,12 +170,19 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 - Diagnostic transitions are visible to Administrators and recorded as audit events. Workspace Users may see only a generic integration availability signal needed to explain a query failure and must not see credential details or unrestricted diagnostic payloads.
 - A failed health check must not silently enable a tool or cause retries that exceed the connector's rate limit. Query routing must surface unavailable integrations as partial or blocked according to the tool's declared dependency policy.
 
+### FR-10: Chat Result Artifacts
+
+- When a skill produces tabular results, chat must render a Slack-style file card in the thread: filename, media type, row count, header row, a capped preview of data rows, a truncation label when more rows exist, Copy CSV, Copy for spreadsheet (tab-separated), and Download.
+- The downloadable CSV is a server-persisted `ResultArtifact` for the run. Preview rows are a bounded subset of that artifact, never a second LLM-written table.
+- Copy and download must be usable in Excel or Google Sheets without opening the canvas. The canvas continues to show the same rows for collaboration.
+- Artifacts exclude secrets, authorization headers, and unredacted raw vendor payloads.
+
 ## 5. Data and State Model
 
 | Entity | Required Fields | Notes |
 | --- | --- | --- |
 | Workspace | `id`, `tenant_id`, `name` | Collaboration boundary. |
-| QueryRun | `id`, `workspace_id`, `initiator_id`, `input_kind`, `input_count`, `mode`, `status`, `correlation_id`, timestamps | Immutable input metadata; status progresses queued/running/partial/completed/failed/cancelled. |
+| QueryRun | `id`, `workspace_id`, `initiator_id`, `skill_id`, `input_kind`, `input_count`, `mode`, `status`, `correlation_id`, timestamps | Immutable input metadata; status progresses queued/running/partial/completed/failed/cancelled. |
 | Subject | `id`, `workspace_id`, `username`, `display_name`, `identity_confidence` | Canonical person identity. |
 | Device | `id`, `subject_id`, `serial`, `hostname`, `os_family`, `canonical_status` | May link to multiple source IDs. |
 | SourceEvidence | `id`, `device_id`, `query_run_id`, `source`, `source_record_id`, `retrieved_at`, `status`, `normalized_json_ref`, `schema_version` | Source-of-truth evidence and provenance. |
@@ -182,7 +190,9 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 | CanvasWorkItem | `id`, `device_id`, `finding_id`, `checked`, `assignee_id`, `cmdb_cleanup_state`, `version` | Shared mutable canvas state. |
 | Note | `id`, `work_item_id`, `author_id`, `body`, timestamps, `version` | Revisioned user commentary. |
 | ActionRequest | `id`, `work_item_ids`, `operation`, `connector`, `parameters`, `status`, `requester_id`, `confirmed_at`, `idempotency_key`, timestamps | Confirmation and execution boundary. |
+| WorkflowDefinition | `id`, `name`, `trigger_phrases`, `tool_ids`, `output_artifact`, `lifecycle_state` | Packaged Claude Code skill/workflow; tools are registered capabilities, not SKILL.md at runtime. |
 | ToolDefinition | `id`, `name`, `version`, `integration`, `implementation_ref`, `input_schema`, `output_schema`, `agent_allowlist`, `mutability`, `lifecycle_state` | Approved Python capability registry; implementation reference is not executable user input. |
+| ResultArtifact | `id`, `query_run_id`, `filename`, `media_type`, `row_count`, `object_ref`, `preview_json`, timestamps | Chat/canvas CSV (or other file) produced by a run; preview is a bounded row subset. |
 | WorkspaceToolConfig | `id`, `workspace_id`, `tool_id`, `enabled`, `assigned_agents`, `parameters_json`, `version`, `updated_by`, timestamps | Workspace-scoped enablement, assignment, and validated parameters. |
 | CredentialReference | `id`, `workspace_id`, `integration`, `secret_manager_ref`, `version`, `state`, `updated_by`, timestamps | Opaque reference and lifecycle metadata only; no plaintext secret. |
 | ConnectionHealthCheck | `id`, `workspace_id`, `integration`, `credential_version`, `state`, `latency_ms`, `redacted_message`, `correlation_id`, `checked_at` | Diagnostic history and current integration health. |
@@ -194,13 +204,13 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 
 ### Orchestrator Agent
 
-**Purpose:** classify the request, validate it, select micro-query or batch route, coordinate progress, and enforce confirmation gateways.
+**Purpose:** coordinate a run that a deterministic skill matcher and router have already bound. The Orchestrator does not extract names, choose connectors, or loop tools per identity.
 
-**Permitted tools:** request sanitizer; query-run store; read-only connector dispatcher; deterministic batch-job enqueuer; canvas event publisher; action-request creator.
+**Permitted tools:** query-run store; read-only connector dispatcher; deterministic batch-job enqueuer; canvas event publisher; action-request creator.
 
-**Prohibited tools/actions:** direct state-changing connector calls; secrets access; confirmation inference; raw payload export.
+**Prohibited tools/actions:** direct state-changing connector calls; secrets access; confirmation inference; raw payload export; receiving unsanitized name lists or raw chat text in model context.
 
-**Prompt contract:** "Use only validated request metadata and permitted normalized evidence. Determine the route strictly from the routing table. For any heavy scan or mutation, create a confirmation request with scope and impact. Return structured status, correlation ID, and user-safe explanation."
+**Prompt contract:** "Use only validated request metadata (`skill_id`, `mode`, `input_count`, correlation ID) and permitted normalized evidence references. Do not re-decide the route or invent connectors. For any heavy scan or mutation, create a confirmation request with scope and impact. Return structured status, correlation ID, and user-safe explanation."
 
 ### Analysis Agent
 
@@ -225,7 +235,7 @@ Routing is evaluated after sanitization and deduplication. The decision must be 
 ## 7. Non-Functional Requirements
 
 - **Security:** secrets are stored in approved secret management only; browser/API responses are redacted as required by workspace policy; least-privilege credentials and audit logging are mandatory.
-- **Performance:** micro-query chat feedback begins after the first available connector response; batch workload is parallelized within per-connector rate limits and reports progress without model polling loops.
+- **Performance:** micro-query chat feedback begins after the first available connector response; batch workload is parallelized within per-connector rate limits and reports progress without model polling loops. Identity lists are excluded from model context on both routes so token cost does not scale with paste size.
 - **Reliability:** jobs are retryable at safe boundaries, connector calls use bounded retry/backoff, and idempotency protects state-changing operations.
 - **Observability:** structured logs, metrics, traces, correlation IDs, connector health, job queue depth, routing counts, and action outcomes are required.
 - **Configuration and secrets:** authorization checks are server-side and deny by default; tool definitions and workspace configurations are versioned; secret-manager access is least privilege; secrets and diagnostic payloads are redacted from logs, agent prompts, browser responses, exports, and audit event values.
@@ -260,6 +270,17 @@ As a security owner, I want tool and credential administration enforced separate
 - **AC-3.1:** A Workspace User can trigger an enabled, assigned tool during a query but cannot enable, disable, assign, parameterize, or inspect its hidden configuration.
 - **AC-3.2:** Every tool, configuration, credential, and diagnostic mutation is denied unless the authenticated actor has the Administrator claim for the target workspace.
 - **AC-3.3:** Every permitted mutation produces an append-only audit event with actor, workspace, version, timestamp, and correlation ID.
+
+### P0: Packaged Skill for Non-Developers
+
+**US-8: Look up users' devices from chat**
+
+As a Workspace User, I want to ask "look up these users devices" and paste names so that ServiceNow, Jamf, and Intune evidence comes back as a spreadsheet-ready CSV in chat.
+
+- **AC-8.1:** Instruction prose is not treated as usernames; 1–4 unique identities take micro-query; 5 or more, or any CSV, take batch.
+- **AC-8.2:** Both routes invoke `asset_report_build` then `asset_report_mdm` only; they do not invoke `asset_report_app`, Cortex XDR, or Tenable.
+- **AC-8.3:** Chat shows a Slack-style CSV card with preview, copy, and download; the canvas shows the same rows.
+- **AC-8.4:** Prompt traces and agent context contain `skill_id` and counts, not the pasted name list.
 
 ### P1: Govern Tool Extensibility
 
@@ -299,14 +320,14 @@ As an auditor, I want each run and administrative change tied to exact versions 
 
 ## 9. MVP Acceptance Criteria
 
-1. A request with five unique valid usernames routes to micro-query; one with six routes to batch after normalization.
-2. A CSV upload routes to batch regardless of row count and produces an internal sanitized CSV reference.
-3. A partial connector failure yields visible partial results and source-specific errors without discarding successful evidence.
+1. A request with four unique valid identities and no CSV routes to micro-query; one with five routes to batch after normalization. Instruction words in "look up these users devices" are not identities.
+2. A CSV upload routes to batch regardless of row count and produces an internal sanitized CSV reference. The user-facing download is the device result artifact, not the upload.
+3. A partial connector failure yields visible partial results and source-specific errors without discarding successful evidence. The chat CSV still downloads with per-source error columns.
 4. Two authorized users viewing the same workspace observe an assignment or check-state update within five seconds.
 5. A stale row version cannot overwrite a newer server-side state without a conflict response.
 6. The analysis result cites source-evidence IDs and labels insufficient evidence.
 7. A Jamf policy or ServiceNow ticket operation cannot execute without a matching confirmed, unexpired action request and audit record.
-8. An export reflects active filters and workspace data policy.
+8. An export reflects active filters and workspace data policy. A completed `lookup-user-devices` run also attaches a chat CSV artifact with a capped preview.
 9. An Administrator can enable/disable and agent-assign a registered tool per workspace, while a Workspace User cannot perform those operations through UI or API.
 10. An Administrator can save and rotate each supported integration credential through the secret manager; no plaintext secret appears in persisted application records, logs, agent context, browser responses, exports, or audit events.
 11. The health dashboard distinguishes Connected, Authentication Failed, Rate Limited, and Unavailable for each integration and records the credential version and correlation ID used by each test.
@@ -315,8 +336,10 @@ As an auditor, I want each run and administrative change tied to exact versions 
 ## Sources
 
 - Product brief supplied by the requestor on 2026-08-26.
+- Requestor skill-packaging goal and device-lookup example on 2026-08-29.
 - [mrd.md](mrd.md).
 - [aamad.config.yml](../../aamad.config.yml).
+- [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
 
 ## Assumptions
 
@@ -334,3 +357,4 @@ As an auditor, I want each run and administrative change tied to exact versions 
 
 - 2026-08-26 | product-mgr | Created PRD from supplied specifications; selected runtime recorded as CrewAI from project configuration.
 - 2026-08-27 | product-mgr | Added administrator tool management and extensibility, credential vault and diagnostics, explicit RBAC boundaries, prioritized user stories, and acceptance criteria.
+- 2026-08-29 | system-arch | Requestor-directed revision: packaged Claude Code skills for non-developers; `MICRO_QUERY_MAX_SUBJECTS = 4`; skill-scoped ServiceNow/Jamf/Intune lookup; FR-10 chat CSV artifacts; US-8.

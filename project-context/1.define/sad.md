@@ -2,7 +2,9 @@
 
 ## Context
 
-This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture. Fleet Recon is the endpoint reconciliation workspace described by the PRD, which remains the engineering source of truth.
+This document translates the [Fleet Recon Product Requirements Document](prd.md) and [Market Requirements Document](mrd.md) into an implementable MVP architecture. Fleet Recon is the endpoint reconciliation workspace described by the PRD. For non-developers, it is also the productized runtime for the operator’s Claude Code skills: registered workflows and Python tools run behind a prebaked chat window with org credentials, without a CLI.
+
+The first packaged workflow is **Look up users' devices** (`lookup-user-devices`). See [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
 
 **Selected runtime:** `crewai`
 
@@ -17,8 +19,8 @@ This document translates the [Fleet Recon Product Requirements Document](prd.md)
 1. **Evidence before inference.** Every finding references persisted source-evidence IDs, source record IDs, retrieval time, status, and correlation ID.
 2. **Agents recommend; application services decide and enforce.** CrewAI agents produce validated structured outputs. Authorization, routing, target scope, confirmation, allowlists, version checks, and connector mutation boundaries are deterministic Python services.
 3. **One server-side workspace state.** Chat cards, canvas rows, action previews, and activity history all read and mutate the same persisted entities.
-4. **Deterministic routing.** Sanitization and deduplication happen before routing. The stored route never changes during a run.
-5. **Partial failure is a result state.** A failed connector does not erase successful evidence from other connectors.
+4. **Deterministic routing.** Skill binding, sanitization, and deduplication happen before routing. The stored route never changes during a run. Identity lists never enter model context.
+5. **Partial failure is a result state.** A failed connector does not erase successful evidence from other connectors. The chat CSV still downloads.
 6. **Observable by default.** Every request, agent task, connector call, job, event, and action carries a correlation ID and structured status.
 7. **Least privilege.** Read-only collection and analysis are separate from the two allowlisted mutation adapters. Secrets never enter agent context or browser responses.
 8. **Reproducible agent execution.** Crew sessions are short-lived and task inputs are explicit. Persistent business state is in the database, not agent memory.
@@ -27,18 +29,18 @@ This document translates the [Fleet Recon Product Requirements Document](prd.md)
 
 **Included:**
 
-- Copilot Chat and Live Canvas in a desktop-first web UI.
-- Typed requests, pasted usernames, and CSV upload.
-- Sanitization, deduplication, validation, and persisted micro-query/batch routing.
-- Read-only evidence collection from ServiceNow, Cortex XDR, Jamf Pro, Microsoft Intune, and Tenable.
-- Normalized evidence, findings, confidence, source citations, work items, notes, assignments, cleanup state, activity history, and filtered CSV export.
+- Copilot Chat and Live Canvas in a desktop-first web UI. Chat is a prebaked skill window (enabled workflow chips), not a generic coding agent.
+- Typed requests, pasted usernames, and CSV upload, with instruction prose stripped from identity extraction.
+- Sanitization, deduplication, validation, and persisted micro-query/batch routing with `MICRO_QUERY_MAX_SUBJECTS = 4`.
+- Skill-scoped read-only evidence collection. `lookup-user-devices` uses ServiceNow, Jamf Pro, and Microsoft Intune. Cortex XDR and Tenable remain in the connector contract for skills that declare them.
+- Normalized evidence, findings, confidence, source citations, work items, notes, assignments, cleanup state, activity history, filtered CSV export, and Slack-style chat CSV artifacts (preview, copy, download).
 - Three CrewAI agents: Orchestrator, Analysis, and Action/Dispatch.
 - Durable batch jobs with bounded connector concurrency and retry-safe collection.
 - WebSocket collaboration events.
 - Preview, explicit confirmation, allowlist enforcement, idempotency, and audit records for ServiceNow ticket creation and Jamf policy triggers.
 - Basic authentication through an enterprise OIDC provider with Workspace User and Administrator roles; administrator claims gate configuration.
 - Administrator Tool Management, workspace-scoped tool configuration, credential references, and connector health diagnostics.
-- A governed compatibility path for the approved `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` capabilities.
+- A governed compatibility path for the approved `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py` capabilities, packaged from Claude Code `asset-ops` skills into `WorkflowDefinition` + `ToolDefinition` records.
 
 **Explicitly deferred:**
 
@@ -75,7 +77,7 @@ The Application Crew is a small CrewAI crew owned by the backend orchestration l
 
 | Agent | Goal | Inputs | Outputs | Tools and hard boundary |
 | --- | --- | --- | --- | --- |
-| Orchestrator Agent | Classify intent, validate route metadata, coordinate the run, and prepare action requests when needed. | Sanitized request metadata, route, user intent, connector availability. | `OrchestratorResult`: status, route, progress messages, requested read operations, action-preview request. | Sanitizer, run store, read-only dispatcher, batch enqueuer, event publisher, action-request creator. Never calls a mutation adapter, reads secrets, or infers confirmation. |
+| Orchestrator Agent | Coordinate a run that skill matching and routing have already bound; prepare action requests when needed. | `skill_id`, route, `input_count`, connector availability; never the raw name list. | `OrchestratorResult`: status, route, progress messages, requested read operations, action-preview request. | Run store, read-only dispatcher, batch enqueuer, event publisher, action-request creator. Never extracts identities, chooses connectors outside the skill, calls a mutation adapter, reads secrets, or infers confirmation. |
 | Analysis Agent | Compare normalized evidence and produce source-cited discrepancies and next-step playbooks. | Least-privilege normalized evidence references and policy catalog. | `AnalysisResult`: findings, category, severity, confidence, evidence IDs, recommendation, prerequisites, approval requirement. | Evidence reader, findings store, rule catalog. No connector mutation, ticket creation, Jamf policy trigger, or unsupported conclusion. |
 | Action/Dispatch Agent | Construct and execute only an already-confirmed, allowlisted operation. | Selected work items, immutable action request, confirmation and allowlist results. | `DispatchResult`: per-target receipts, final action status, audit references. | Work-item reader, action store, confirmation verifier, allowlist verifier, schema validator, ServiceNow/Jamf adapter, audit writer. Cannot broaden target scope or execute without deterministic preconditions. |
 
@@ -138,21 +140,19 @@ The YAML is configuration, not an authorization policy. Tool registration is per
 #### Micro-query
 
 1. FastAPI authenticates the user and creates a correlation ID.
-2. `RequestIntakeService` sanitizes and deduplicates usernames, rejects invalid input, and persists `QueryRun` with `mode=micro_query`.
-3. The Orchestrator task receives only validated metadata and determines targeted read operations.
-4. Connector adapters run concurrently for the small subject set under connector-specific rate limits.
-5. Each result is normalized and persisted as `SourceEvidence`; connector errors are persisted separately.
-6. The Analysis task reads normalized evidence and persists findings/work items.
-7. Run and card events are persisted and published to SSE/WebSocket subscribers.
+2. `SkillMatcher` binds a `WorkflowDefinition`. `RequestIntakeService` strips instruction prose, sanitizes and deduplicates identities, rejects invalid input, and persists `QueryRun` with `skill_id` and `mode=micro_query` when `1 <= input_count <= 4` and input is not a CSV.
+3. The worker (not the LLM) invokes the skill’s Python adapters concurrently per identity under connector-specific rate limits.
+4. Each result is normalized and persisted as `SourceEvidence`; connector errors are persisted separately.
+5. When collection reaches a terminal state, the service writes `ResultArtifact` (CSV), emits `chat.artifact` with a capped preview, and upserts canvas work items.
+6. The Orchestrator task, if invoked, receives only validated metadata. The Analysis task may run after artifact publication and must not block the CSV.
 
 #### Batch
 
-1. Intake applies the same validation and deduplication rules.
-2. For more than five unique usernames or any CSV upload, the service creates an immutable sanitized CSV object and persists its reference on `QueryRun`.
-3. A deterministic job containing `run_id`, object reference, connector plan, and correlation ID is enqueued.
-4. The worker reads the CSV, fans out bounded connector calls, checkpoints per-connector/per-subject results, and publishes progress.
-5. The Analysis task runs after collection reaches a terminal state, including partial completion.
-6. Findings and canvas work items are persisted; the run becomes `completed`, `partial`, `failed`, or `cancelled` according to explicit state rules.
+1. Intake applies the same skill binding, validation, and deduplication rules.
+2. For more than four unique identities or any CSV upload, the service creates an immutable sanitized username CSV object and persists its reference on `QueryRun`.
+3. A deterministic job containing `run_id`, object reference, `skill_id`, connector plan, and correlation ID is enqueued. The name list is not copied into crew prompts.
+4. The worker reads the CSV, runs the skill’s tool graph (`asset_report_build` then `asset_report_mdm` for this workflow), checkpoints per-connector/per-subject results, and publishes progress as counts and milestones.
+5. The same `ResultArtifact` + canvas path as micro-query runs after collection reaches a terminal state, including partial completion.
 
 #### Action flow
 
@@ -177,7 +177,29 @@ All task outputs use Pydantic schemas. Invalid output is rejected, logged with a
 - Agent tasks have a 60-second micro-query analysis budget and a five-minute batch analysis budget, configurable per environment.
 - A micro-query request targets a 10-second time-to-first-progress event and a 30-second normal completion budget, excluding vendor outages.
 - CrewAI uses no persistent memory for MVP. Each task receives explicit context from the database and previous task output.
-- Token and cost controls include bounded `max_iter`, structured prompts, least-privilege evidence, batch aggregation outside the model, and per-run model/token metrics.
+- Token and cost controls include bounded `max_iter`, structured prompts, least-privilege evidence, **identity lists held only in `query_run_input` / object storage**, batch aggregation outside the model, and per-run model/token metrics.
+
+### 2.8 Skill Pack and Workflow Model
+
+Claude Code skills are a **packaging source**, not a runtime agent loop. An operator (or later an admin import job) compiles `.claude/skills/<name>/SKILL.md` plus `scripts/` into versioned product objects. The chat window is prebaked: enabled workflows appear as chips; Workspace Users never open SKILL.md or a terminal.
+
+| Claude Code artifact | Product object | Runtime rule |
+| --- | --- | --- |
+| `asset-ops/SKILL.md` | `WorkflowDefinition` (`lookup-user-devices`, plus future app-health workflow) | Trigger phrases, description, ordered `tool_ids`, output artifact type |
+| `scripts/asset_report_build.py` | `ToolDefinition` `asset_report_build` | ServiceNow user + `alm_hardware` only |
+| `scripts/asset_report_mdm.py` | `ToolDefinition` `asset_report_mdm` | Jamf (macOS) + Intune (Windows) |
+| `scripts/asset_report_app.py` | `ToolDefinition` `asset_report_app` | **Not** in `lookup-user-devices` |
+
+`lookup-user-devices` tool set is exactly `[asset_report_build, asset_report_mdm]`. Cortex XDR and Tenable adapters exist on the connector contract but are not registered on this workflow.
+
+**Skill matching (deterministic, before any crew task):**
+
+1. Score chat text and optional client `intent` against workspace-enabled `trigger_phrases`.
+2. Strip matched spans and instruction stopwords from the identity extractor.
+3. If identities remain, bind `skill_id` and continue. If the phrase matches but no identities remain, return a user-safe prompt to paste names — do not create a connector run.
+4. CrewAI receives `{skill_id, mode, input_count, correlation_id}` only.
+
+This is the token-saving design: four names are four Python identity lookups; fifty names become an internal CSV consumed by the same adapters. The model does not see either list.
 
 ## 3. Frontend Architecture Specification
 
@@ -213,9 +235,11 @@ The desktop layout uses two independently scrollable panels: chat on the left an
 
 **Chat:**
 
-- Text composer accepts natural-language requests and pasted usernames.
+- Empty state lists enabled `WorkflowDefinition` chips. Selecting **Look up users' devices** sets composer intent and helper text ("Paste names; 1–4 look up immediately, 5+ run as a spreadsheet job").
+- Text composer accepts natural-language requests and pasted usernames. The client preview uses the same instruction-stripping rules as the server; the server remains authoritative.
 - A plus menu contains CSV upload and permitted action shortcuts; connector configuration is administrator-only.
-- Messages show correlation ID, run status, progress, partial failures, evidence-cited result cards, and action confirmation prompts.
+- Messages show correlation ID, run status, progress, partial failures, evidence-cited result cards, **Slack-style `ResultArtifact` file cards**, and action confirmation prompts.
+- Artifact cards show filename, row count, header + up to 10 preview rows, truncation count, Copy CSV, Copy for spreadsheet (TSV), and Download. They are not a second LLM-authored table.
 - Upload state shows validation, rejected-count summary, and server-created run ID without echoing sensitive raw content.
 
 **Canvas:**
@@ -273,10 +297,12 @@ Representative endpoints:
 
 | Method and path | Purpose |
 | --- | --- |
-| `POST /api/v1/workspaces/{workspace_id}/runs` | Submit typed/pasted input; returns `202` with `QueryRunSummary`. |
+| `POST /api/v1/workspaces/{workspace_id}/runs` | Submit typed/pasted input; returns `202` with `QueryRunSummary` including `skill_id`. |
 | `POST /api/v1/workspaces/{workspace_id}/runs/upload` | Validate CSV and create a batch run; returns `202` with immutable input reference metadata, never file contents. |
-| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}` | Read run status and summary. |
-| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}/events` | SSE stream for run progress and chat cards. |
+| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}` | Read run status and summary, including `artifact_id` when present. |
+| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}/events` | SSE stream for run progress, chat cards, and `chat.artifact`. |
+| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}/artifacts/{artifact_id}` | Artifact metadata and preview rows. |
+| `GET /api/v1/workspaces/{workspace_id}/runs/{run_id}/artifacts/{artifact_id}/download` | Authenticated CSV download (`Content-Disposition` filename). |
 | `GET /api/v1/workspaces/{workspace_id}/work-items` | Read filtered canvas work items. |
 | `PATCH /api/v1/workspaces/{workspace_id}/work-items/{id}` | Update checked, assignee, cleanup state, or note-related state with `expected_version`. |
 | `POST /api/v1/workspaces/{workspace_id}/work-items/{id}/notes` | Add a revisioned note with `expected_version`. |
@@ -305,14 +331,14 @@ Representative endpoints:
 }
 ```
 
-`QueryRunSummary` includes `id`, `workspace_id`, `input_kind`, `input_count`, `mode`, `status`, `correlation_id`, timestamps, and rejected-count metadata. It does not include raw rejected input.
+`QueryRunSummary` includes `id`, `workspace_id`, `skill_id`, `input_kind`, `input_count`, `mode`, `status`, `artifact_id`, `correlation_id`, timestamps, and rejected-count metadata. It does not include raw rejected input or the identity list.
 
 SSE event envelope:
 
 ```json
 {
   "event_id": "uuid",
-  "event_type": "run.progress|chat.card|connector.error|run.completed",
+  "event_type": "run.progress|chat.card|chat.artifact|connector.error|run.completed",
   "workspace_id": "uuid",
   "run_id": "uuid",
   "sequence": 12,
@@ -327,7 +353,7 @@ WebSocket events use the same envelope and are authorized to one workspace. Clie
 ### 4.3 Validation, Rate Limiting, and Authorization
 
 - Pydantic validates all request bodies, query parameters, CSV metadata, action parameters, and agent outputs.
-- Input normalization trims whitespace, removes unsupported control characters, normalizes line endings, validates the configured username format, deduplicates case-insensitively, and records only safe rejection reasons.
+- Input normalization trims whitespace, removes unsupported control characters, normalizes line endings, **strips skill trigger phrases and instruction stopwords**, validates the configured username format, deduplicates case-insensitively, and records only safe rejection reasons.
 - CSV validation enforces configurable maximum bytes and rows, UTF-8 with explicit handling for approved encodings, required username column mapping, allowed MIME/type policy, and an upload malware-scan hook when required by the enterprise service.
 - API rate limits apply per authenticated actor and workspace; run creation, upload, export, and action execution have separate limits.
 - Every workspace query includes workspace authorization. Administrator-only configuration checks an explicit identity claim and never relies on a frontend-only guard.
@@ -342,6 +368,7 @@ Core tables map directly to the PRD entities:
 
 - `workspace`
 - `query_run` and `query_run_input`
+- `workflow_definition` and `result_artifact`
 - `subject`, `device`, and `device_source_identity`
 - `source_evidence` and `connector_error`
 - `finding` and `finding_evidence`
@@ -490,12 +517,34 @@ A canvas mutation is authorized, version-checked, committed with an audit event,
 
 Only selected work-item IDs are accepted. The server snapshots target IDs, operation, parameters, evidence rationale, requester, blast-radius count, expiration, and idempotency key in `ActionRequest`. Confirmation signs that exact snapshot. Execution refuses any changed target or parameter set, verifies the allowlist, and writes a receipt for every target.
 
+### 6.4 Example Request: "look up these users devices"
+
+This is the authoritative handling for the requestor’s example. Full functional detail is in [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
+
+```text
+User: look up these users devices
+      nina.patel
+      chris.okonkwo
+      sam.lee
+      jordan.nguyen
+```
+
+1. **Skill bind.** `SkillMatcher` maps the phrase to `lookup-user-devices`. Required tools: `asset_report_build`, `asset_report_mdm`. Cortex, Tenable, and `asset_report_app` are not invoked.
+2. **Identity extract.** Stopwords `look`, `up`, `these`, `users`, `devices` are dropped. Four unique usernames remain. `mode=micro_query`.
+3. **Python lookups (not LLM tool loops).** For each username, ServiceNow resolves `sys_user` and assigned `alm_hardware`. Platform routes each device to Jamf (macOS) or Intune (Windows). Calls run concurrently with per-connector rate limits.
+4. **Chat CSV.** When the run is `completed` or `partial`, the API emits `chat.artifact` for `devices-<short_id>.csv`. The thread shows a Slack-style file card: filename, row count, header, first 10 rows, Copy CSV, Copy for spreadsheet, Download.
+5. **Canvas.** The same joined rows appear as work items. Export uses the same column contract.
+
+If the paste contains **five or more** names, step 2 stores an internal `username` CSV and step 3 is the batch worker running the same two adapters in order. The LLM still never receives the name list. That is the token-saving split: small sets use per-identity HTTP; large sets use the script pipeline’s CSV contract. Both produce the same artifact schema.
+
+Today’s scaffold cannot complete this example: `POST /runs` only sanitizes tokens against a username regex (so instruction words become false identities), routing uses a threshold of 5, CrewAI is not kicked off, and no connector worker exists, so runs stay `queued` with no artifact. Section "Build revision inventory" lists the files that must change.
+
 ## 7. Performance & Scalability Specifications
 
 ### 7.1 MVP Targets
 
 - First micro-query progress event: within 10 seconds under healthy connector conditions.
-- Normal micro-query completion: within 30 seconds for up to five users, excluding vendor outage time.
+- Normal micro-query completion: within 30 seconds for up to four users, excluding vendor outage time.
 - Batch acceptance response: within 2 seconds after successful validation and object persistence.
 - Batch progress: at least one persisted progress event per connector milestone or every 10 seconds for active work.
 - Canvas mutation broadcast: 99.9% delivered to connected collaborators within five seconds.
@@ -538,8 +587,8 @@ Data residency, audit retention duration, endpoint identifier classification, ve
 
 ### 9.1 Unit Tests
 
-- Username sanitization, control-character removal, normalization, deduplication, and safe rejection reporting.
-- Routing threshold: five unique users without CSV is micro-query; six is batch; every CSV is batch; invalid input is rejected without connector calls.
+- Skill matching, instruction-stopword stripping, and `ResultArtifact` preview-row cap.
+- Routing threshold: four unique identities without CSV is micro-query; five is batch; every CSV is batch; instruction stopwords are not identities; invalid input is rejected without connector calls.
 - CSV size, row, MIME/type, encoding, required-column, and upload-scan-hook behavior.
 - Connector normalization and redaction for each adapter.
 - `asset_report_build` username-column detection, normalization, ServiceNow state/platform filtering, one-row-per-device behavior, placeholder serial handling, and explicit no-device/not-found output.
@@ -558,7 +607,7 @@ Use vendor sandbox or deterministic fixtures to verify the shared connector cont
 
 ### 9.3 Smoke and Acceptance Tests
 
-1. Five valid unique usernames route to micro-query and six route to batch after normalization.
+1. Four valid unique identities route to micro-query and five route to batch after normalization. "look up these users devices" plus four names yields `input_count=4`.
 2. A small CSV routes to batch and leaves an immutable sanitized input reference.
 3. One connector failure leaves successful source evidence visible and marks the run partial.
 4. Two authenticated clients observe a check-state or assignment update within five seconds.
@@ -612,14 +661,28 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 ## Implementation Guidance for AI Development Agents
 
 1. Create the Python/FastAPI/React project skeleton, dependency policy, `.env.example`, migrations, and local service composition.
-2. Implement canonical schemas, request sanitization, deterministic routing, and unit tests before connector breadth.
-3. Implement PostgreSQL repositories, Redis jobs, event envelopes, and optimistic concurrency.
-4. Build the frontend Chat and Canvas against typed mock API contracts before backend integration.
-5. Implement read-only connector contracts with fixtures and partial-failure behavior.
-6. Add CrewAI YAML configuration, role-scoped tools, structured outputs, and prompt trace hooks.
-7. Integrate the frontend with API/SSE/WebSocket paths and verify collaboration behavior.
+2. Implement canonical schemas, **skill matching**, request sanitization with instruction stripping, deterministic routing at threshold 4, and unit tests before connector breadth.
+3. Implement PostgreSQL repositories, Redis jobs, event envelopes, `ResultArtifact` object storage, and optimistic concurrency.
+4. Build the frontend Chat (skill chips + Slack-style artifact card) and Canvas against typed mock API contracts before backend integration.
+5. Implement read-only connector contracts with fixtures and partial-failure behavior. Wire `lookup-user-devices` to ServiceNow, Jamf, and Intune adapters only.
+6. Add CrewAI YAML configuration that receives `{skill_id, mode, input_count}` only; keep role-scoped tools, structured outputs, and prompt trace hooks.
+7. Integrate the frontend with API/SSE/WebSocket paths and verify collaboration behavior plus CSV preview/copy/download.
 8. Add ActionRequest preview, confirmation, allowlist, idempotency, and only then the ServiceNow/Jamf write adapters.
 9. Run QA acceptance tests, security assessment, dependency audit, and `aamad validate` before delivery packaging.
+
+### Build revision inventory (this request)
+
+Define-phase artifacts in this change set specify the behavior. Build-phase files that still implement the old contract and must be revised next:
+
+| Area | Files | Required change |
+| --- | --- | --- |
+| Intake / routing | `backend/services.py`, `backend/schemas.py`, `tests/test_api.py` | `MICRO_QUERY_MAX_SUBJECTS = 4`; `skill_id` on runs; instruction-stopword stripping; do not treat "look/up/these/users/devices" as usernames. |
+| Skill catalog | `backend/agents/config/tasks.yaml`, new `backend/tools/` or workflow registry | Register `lookup-user-devices` → `asset_report_build` then `asset_report_mdm`. |
+| Connectors / worker | not yet present (`backend.md` Known Gaps) | Implement adapters from asset-ops scripts; execute on run create instead of leaving `queued`. |
+| Artifacts | new run artifact endpoints | Persist CSV, preview JSON, authenticated download. |
+| Chat UI | `frontend/src/features/chat/parseInput.ts`, `ChatView.tsx`, `Message.tsx`, `Composer.tsx` | Match threshold 4; skill chips; artifact card (preview table, copy, download); stop auto-opening canvas as the only result surface. |
+| Canvas export | `frontend/src/features/canvas/CanvasPanel.tsx` | Export joined device columns, not submitted usernames only. |
+| Docs already aligned | `prd.md`, `sad.md`, `mrd.md`, SFS, user story | Do not reintroduce threshold 5. |
 
 ## Architecture Validation Checklist
 
@@ -638,7 +701,9 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - [AAMAD configuration](../../aamad.config.yml).
 - [AAMAD SAD template](../../.cursor/templates/sad-template.md).
 - [AAMAD agent framework overview](../../AGENTS.md).
-- Reviewed capability sources: `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_build.py`, `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_mdm.py`, and `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_app.py`.
+- Reviewed capability sources: `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_build.py`, `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_mdm.py`, and `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_app.py`. The requestor’s later path `/Users/nick.sanchez/development-test2/.claude/skills/asset-ops/scripts` was not mounted in this environment; those filenames are treated as the same three capabilities.
+- [SFS lookup-user-devices](sfs/lookup-user-devices.md).
+- Requestor notes 2026-08-29: Claude Code skills for non-developers; 4-name vs CSV-script split; Slack-like CSV preview; automatic ServiceNow + Jamf + Intune lookup.
 
 ## Assumptions
 
@@ -646,7 +711,7 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - CrewAI is used as an orchestration runtime, not as a security or authorization boundary.
 - PostgreSQL, Redis, and private object storage are available as managed or containerized pilot dependencies.
 - The enterprise provides an OIDC identity provider and approved non-production connector credentials.
-- The three supplied report scripts are approved starting implementations; their current CLI/CSV behavior is compatibility input to the typed tool adapters, not a permanent public API.
+- The three supplied report scripts are approved starting implementations; their current CLI/CSV behavior is compatibility input to the typed tool adapters, not a permanent public API. "Look them up individually" means per-identity Python connector calls, not LLM-per-name tool use.
 - Vendor API permissions and exact field mappings are finalized during the Build integration phase.
 - A single workspace can contain multiple authenticated collaborators, while the MVP remains single-tenant per deployment.
 
@@ -659,9 +724,12 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 5. What retention and deletion periods apply to normalized evidence, raw-response references, input CSVs, exports, and audit events?
 6. Which enterprise upload service provides malware scanning, and is it mandatory for the pilot?
 7. Which model provider, region, data-processing agreement, and token budget are approved for CrewAI?
-8. Are Cortex XDR and Tenable permissions available through an internal integration platform or must direct adapters be built?
+8. Are Cortex XDR and Tenable permissions available through an internal integration platform or must direct adapters be built? They stay off `lookup-user-devices` until a skill declares them.
+9. What CSV columns must the pilot spreadsheet include beyond the SFS minimum list?
+10. Are emails, `DOMAIN\sam`, and display names in scope for identity extraction?
 
 ## Audit
 
 - 2026-08-27 | `system-arch` | `create-sad` | Resolved `AAMAD_TARGET_RUNTIME=crewai` from `aamad.config.yml`; created the MVP Solution Architecture Document from the Fleet Recon PRD, MRD, and SAD template.
 - 2026-08-27 | `system-arch` | `update-sad` | Incorporated updated PRD administrator requirements and reviewed the three report scripts; defined governed capability adapters, pipeline execution, configuration/credential APIs, health diagnostics, RBAC enforcement, and versioned run snapshots.
+- 2026-08-29 | `system-arch` | `create-sfs` / `update-sad` | Packaged Claude Code asset-ops skills as `WorkflowDefinition`; `MICRO_QUERY_MAX_SUBJECTS = 4`; skill-scoped SN/Jamf/Intune lookup; `ResultArtifact` chat CSV; identity lists excluded from model context. Resolved `AAMAD_TARGET_RUNTIME=crewai`. Prompt Trace omitted: specification update, not a runtime model invocation.

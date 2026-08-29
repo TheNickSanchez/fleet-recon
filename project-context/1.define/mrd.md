@@ -84,7 +84,7 @@ A strong design-partner customer has 500-10,000 managed endpoints, uses ServiceN
 | Investigations finish faster | One normalized view replaces repeated manual pivots. | Median time from request acceptance to decision, compared with baseline. |
 | More discrepancies reach closure | Assignment, notes, and cleanup state remain shared and durable. | Closure rate and aging of CMDB discrepancy work items. |
 | Remediation is safer | Preview, approval, allowlists, and receipts gate state-changing actions. | Percentage of mutations with complete approval/audit chain; target 100%. |
-| AI cost remains controlled | Five-or-fewer requests use lightweight micro-query; larger/CSV work uses deterministic batch jobs. | Model tokens and connector calls per run by route. |
+| AI cost remains controlled | Four-or-fewer requests use lightweight micro-query; larger/CSV work uses deterministic batch jobs. Identity lists stay out of model context on both routes. | Model tokens and connector calls per run by route. |
 | Security and IT cooperate better | Findings retain source and freshness context across domain boundaries. | Percentage of selected findings with sufficient evidence to make an ownership decision. |
 
 ## 7. Product Positioning and Alternatives
@@ -111,7 +111,7 @@ A strong design-partner customer has 500-10,000 managed endpoints, uses ServiceN
 
 - Read-only evidence collection from ServiceNow, Cortex XDR, Jamf Pro, Microsoft Intune, and Tenable, including source status and timestamp.
 - Input through conversational text, pasted usernames, and CSV upload.
-- Deterministic routing after sanitization: 1-5 unique usernames use micro-query; more than 5 or any CSV uses batch automation.
+- Deterministic routing after sanitization: 1-4 unique identities use micro-query; more than 4 or any CSV uses batch automation. Instruction prose is not counted as an identity.
 - Shared workspace dashboard with filters, device/user evidence, notes, check state, assignment, CMDB cleanup state, activity history, and CSV export.
 - Structured discrepancy analysis with evidence IDs, confidence, and recommended playbook.
 - Approval-gated ServiceNow ticket creation and Jamf policy dispatch for allowlisted actions only.
@@ -195,3 +195,4 @@ A strong design-partner customer has 500-10,000 managed endpoints, uses ServiceN
 ## Audit
 
 - 2026-08-26 | product-mgr | Rewrote MRD after research review. Replaced an accidental Project Manager-authored feature summary with a market-focused document, cited primary vendor documentation, and labeled unvalidated commercial claims as pilot hypotheses.
+- 2026-08-29 | system-arch | Aligned dual-engine threshold with requestor guidance: 1–4 micro-query, 5+ batch; identity lists excluded from model context.
