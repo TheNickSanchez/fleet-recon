@@ -98,17 +98,40 @@ The FastAPI/React scaffold already in the repo is a prototype of an enterprise w
 
 **Do not build for this example:** administrator credential vault UI, connection-health console, canvas collaboration, CrewAI YAML crew, RQ workers.
 
+## 7. Reviewed skill pack (`docs/`, `origin/master` `af27545`)
+
+The tree is the CPE Claude Code workspace (`docs/CLAUDE.md`), not a second app. Skills live under `docs/.claude/skills/`.
+
+| Skill | What it actually is | Product implication |
+| --- | --- | --- |
+| `asset-ops` | CSV that grows rightward: step 1 SN hardware (`asset_report_build.py`) → optional 1.5 SN-gap MCP fill → step 2 MDM (`asset_report_mdm.py`) → step 3 app (`asset_report_app.py`) → optional HTML. Independent Jamf group **write**. | This is the pasted-name-list / spreadsheet path. |
+| `device-lookup` | One serial/hostname/user, **no ticket**. MCP immediately: `jamf_get_device_summary`, `intune_lookup_device`, `snow_lookup_user_profile`; Tenable only for vuln phrasing. | This is the 1-identifier ad hoc path, not a 50-row CSV. |
+| `vulnerability-remediation` / `ticket-workflow` | Jira + Tenable + Jamf writes, canary ≤10, human gates. | Do not auto-load for "look up these users devices". |
+| `report` / `session-wrap` / `sprint-brief` | HTML report, journal, Jira sprint. | Optional later chips. |
+| `jamf-api-patterns` / `jamf-script-patterns` | Shared guardrails, not user chips. | Load with write skills only. |
+
+**Credentials:** steps 1–4 and Jamf sync use `passkey run servicenow|jamf_api|intune`, not an app vault. MCP is required for step 1.5 (`jamf_get_user_devices`, `intune_lookup_users`) and for `device-lookup`. That matches the session-host fork.
+
+**"Look up these users devices" (paste 4 names):** do **not** fire `device-lookup` four times as four chat novels, and do **not** load Tenable. Bind `asset-ops` steps 1 then 2 (computer platforms). Host writes a small CSV even for 4 names — the skill already says the agent reads the **summary**, never the CSV body. Optional: if the user clearly has a single serial and no list, bind `device-lookup` instead.
+
+**Threshold 4:** not in the skills. Scripts are size-agnostic. Keep 4 as a productization rule: ≤4 may also fan out MCP (`device-lookup` / step 1.5 style) if you want live cards; >4 must stay on scripts so tokens stay flat.
+
+**Chat CSV:** today the skill points at `input/output/asset_report.csv` and optionally HTML. Slack-style `chat.csv_preview` is still the missing product surface; columns should match step 1+2: `Username, Serial, Platform, State, Substate, Model, Asset Tag, Notes, MDM, MDM Status, MDM Last Check-In, MDM Detail`.
+
+**Writes:** `jamf_group_sync.py` (`--mode replace` is dangerous) still needs an explicit confirm in the non-dev UI.
+
 ## Sources
 
 - Requestor goal: Claude Code skills for non-developers (2026-08-29).
 - Claude suggestion (session host, intent table, `chat.csv_preview`, drop enterprise stack).
 - Prior system-arch revision: skill binding, threshold 4, FR-10 artifacts (functional; platform rejected).
+- Reviewed `docs/.claude/skills/` from `origin/master` `af27545` (2026-08-29).
 - [prd.md](prd.md), [sad.md](sad.md), [sfs/lookup-user-devices.md](sfs/lookup-user-devices.md).
 
 ## Assumptions
 
-- `development-test2` MCP connections and asset-ops scripts are the validated implementation, even though that tree is not mounted here.
-- Exact MCP tool names (`snow_lookup_user_profile`, etc.) follow the Claude suggestion and must be confirmed against the live MCP server list at implementation time.
+- Skill pack in `docs/.claude/skills/` is the validated CPE Claude Code workspace.
+- Exact MCP names are those in the SKILL.md files (`snow_lookup_user_profile`, `jamf_get_user_devices`, `intune_lookup_users`, `intune_lookup_device`, `jamf_get_device_summary`).
 
 ## Open Questions
 
@@ -119,3 +142,4 @@ The FastAPI/React scaffold already in the repo is a prototype of an enterprise w
 ## Audit
 
 - 2026-08-29 | `system-arch` | `architecture-fork` | Compared enterprise SAD revision with Claude session-host proposal; selected session host as MVP. Resolved runtime target `claude-agent-sdk`. Prompt Trace omitted: specification, not a model invocation.
+- 2026-08-29 | `system-arch` | `review-skill-pack` | Reviewed `docs/.claude/skills` at `af27545`. Split `device-lookup` (MCP, one id) vs `asset-ops` (passkey scripts, CSV). Corrected that steps 1–4 do not use MCP except 1.5.
