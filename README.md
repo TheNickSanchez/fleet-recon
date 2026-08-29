@@ -32,13 +32,13 @@ It is not intended to replace a CMDB, MDM, EDR, vulnerability-management, or ITS
 
 ### Dual-Engine Execution
 
-- **Micro-query mode:** requests containing 1-5 normalized usernames use targeted connector calls and stream compact chat summaries.
-- **Batch automation mode:** requests with more than 5 usernames, or any CSV upload, become sanitized internal CSV payloads processed by deterministic, parallel Python jobs.
-- Route choice is made after validation and deduplication, persisted with the query run, and never silently changes mid-run.
+- **Micro-query mode:** requests containing 1-4 normalized identities use targeted connector calls and stream compact chat summaries plus a CSV artifact card.
+- **Batch automation mode:** requests with more than 4 identities, or any CSV upload, become sanitized internal CSV payloads processed by deterministic, parallel Python jobs (the packaged Claude Code scripts).
+- Route choice is made after skill binding, validation, and deduplication, persisted with the query run, and never silently changes mid-run. Identity lists are not sent to the LLM on either route.
 
 ### Copilot Chat and Live Canvas
 
-- A conversational left pane accepts workflow requests, pasted usernames, CSV uploads, connector actions, progress updates, and approval prompts.
+- A conversational left pane accepts workflow skill requests, pasted usernames, CSV uploads, connector actions, progress updates, Slack-style CSV result cards, and approval prompts.
 - A shared right-side canvas shows user/device evidence, filters, findings, notes, assignments, check state, CMDB cleanup state, activity history, and CSV export.
 - Canvas mutations are server-authoritative, versioned, and broadcast to collaborators.
 
@@ -60,9 +60,10 @@ It is not intended to replace a CMDB, MDM, EDR, vulnerability-management, or ITS
 flowchart LR
   User --> Chat[Copilot Chat]
   User --> Canvas[Live Canvas]
-  Chat --> Orchestrator[Orchestrator Agent]
-  Orchestrator -->|1-5 usernames| Micro[Targeted Python connectors]
-  Orchestrator -->|More than 5 or CSV| Batch[Deterministic batch job]
+  Chat --> Matcher[Skill matcher]
+  Matcher --> Orchestrator[Application services + Crew]
+  Orchestrator -->|1-4 identities| Micro[Targeted Python connectors]
+  Orchestrator -->|More than 4 or CSV| Batch[Deterministic batch job]
   Micro --> Evidence[Normalized evidence store]
   Batch --> Evidence
   Evidence --> Analysis[Analysis Agent]
@@ -78,7 +79,7 @@ flowchart LR
 
 | Agent | Responsibility | Hard Boundary |
 | --- | --- | --- |
-| Orchestrator Agent | Validate request input, choose execution route, coordinate status, and create approval requests. | Does not execute state-changing connector operations. |
+| Orchestrator Agent | Coordinate a skill-bound run, report status, and create approval requests. Does not extract names or choose connectors. | Does not execute state-changing connector operations or put identity lists in model context. |
 | Analysis Agent | Compare normalized evidence and produce cited findings with confidence and playbooks. | Does not mutate systems or infer unsupported facts. |
 | Action/Dispatch Agent | Turn selected, approved work into an allowlisted ServiceNow or Jamf operation. | Cannot bypass approval, change scope, or invoke an unallowlisted action. |
 
