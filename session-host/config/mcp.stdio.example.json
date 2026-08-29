@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "jamf": {
+      "transport": "stdio",
+      "command": "<OPERATOR_SUPPLY: stdio command from Claude Code MCP config>",
+      "args": ["<OPERATOR_SUPPLY: args from Claude Code MCP config>"]
+    },
+    "intune": {
+      "transport": "stdio",
+      "command": "<OPERATOR_SUPPLY: stdio command from Claude Code MCP config>",
+      "args": ["<OPERATOR_SUPPLY: args from Claude Code MCP config>"]
+    },
+    "servicenow": {
+      "transport": "stdio",
+      "command": "<OPERATOR_SUPPLY: stdio command from Claude Code MCP config>",
+      "args": ["<OPERATOR_SUPPLY: args from Claude Code MCP config>"]
+    }
+  }
+}

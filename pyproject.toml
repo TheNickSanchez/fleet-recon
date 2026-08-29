@@ -1,7 +1,9 @@
+# Leftover FastAPI + CrewAI scaffold. Not the Fleet Recon MVP product.
+# Product dependencies live in session-host/pyproject.toml (Claude Agent SDK).
 [project]
 name = "fleet-recon-backend"
 version = "0.1.0"
-description = "Fleet Recon MVP FastAPI and CrewAI backend"
+description = "Leftover FastAPI and CrewAI backend (unused / to-be-replaced)"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "crewai>=1.15,<2.0",
