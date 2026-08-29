@@ -27,9 +27,17 @@ htmlcov/
 .pyre/
 .hypothesis/
 
-# CrewAI local state and logs
+# CrewAI leftover local state (unused FastAPI/CrewAI tree)
 .crewai/
 project-context/2.build/logs/
+
+# Session-host runtime files (session-scoped; no object store)
+session-host/var/tmp/*
+session-host/var/reports/*
+!session-host/var/tmp/.gitkeep
+!session-host/var/reports/.gitkeep
+session-host/config/mcp.stdio.json
+session-host/config/mcp.http.json
 
 # Editor and operating system files
 .DS_Store

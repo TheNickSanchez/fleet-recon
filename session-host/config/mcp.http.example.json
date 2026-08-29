@@ -1,0 +1,17 @@
+{
+  "_comment": "Future Work only. Same server names as stdio. Do not implement an HTTP MCP client, gateway, or remote server in this project.",
+  "mcpServers": {
+    "jamf": {
+      "transport": "http",
+      "url": "https://mcp.example.invalid/jamf"
+    },
+    "intune": {
+      "transport": "http",
+      "url": "https://mcp.example.invalid/intune"
+    },
+    "servicenow": {
+      "transport": "http",
+      "url": "https://mcp.example.invalid/servicenow"
+    }
+  }
+}

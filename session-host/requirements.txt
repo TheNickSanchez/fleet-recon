@@ -1,0 +1,7 @@
+# Session-host MVP runtime dependencies (no application logic in this tree).
+# Install: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Prefer `uv sync` from this directory when uv is available.
+claude-agent-sdk==0.2.148
+pandas==2.3.3
+pyyaml==6.0.3
+requests==2.34.2
