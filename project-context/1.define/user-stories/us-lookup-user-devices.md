@@ -13,17 +13,18 @@ As a Workspace User, I want to type a request such as "look up these users devic
 
 ## 3. Acceptance Criteria
 
-1. Given a message that matches the `lookup-user-devices` skill plus 1–4 unique valid identities, when I send it, then the system routes to micro-query, looks up each identity through ServiceNow then Jamf/Intune, and does not send the name list into the LLM context.
-2. Given the same skill plus 5 or more unique valid identities (or any CSV upload), when I send it, then the system materializes an internal sanitized username CSV, runs the registered `asset_report_build` then `asset_report_mdm` capabilities, and still does not send the name list into the LLM context.
-3. Given instruction prose such as "look up these users devices" mixed with names, when the request is parsed, then instruction words are not treated as usernames and are not counted toward the routing threshold.
-4. Given a completed or partial run, when results exist, then chat renders a Slack-style CSV attachment (filename, row count, column headers, first preview rows, copy, download) and the same rows are available on the canvas.
-5. Given a connector outage, when other sources succeed, then the CSV still downloads with explicit per-source error or not-found columns and the run is `partial`, not discarded.
-6. Given a Workspace User, when they use this skill, then they never see scripts, SKILL.md, credentials, or tool-configuration screens.
+1. Given a message that matches the `lookup-user-devices` skill plus a pasted name list (including 1–4 unique valid identities), when I send it, then the system binds `asset_ops`, runs host-invoked `asset_report_build` then `asset_report_mdm`, and does not send the name list or CSV body into the LLM context.
+2. Given the same skill plus any CSV upload (or a larger name list), when I send it, then the system uses the same two scripts and still does not send the name list into the LLM context.
+3. Given a single serial, hostname, or username with no list, when I send it, then the system binds `device_lookup` MCP and does not run the CSV pipeline.
+4. Given instruction prose such as "look up these users devices" mixed with names, when the request is parsed, then instruction words are not treated as usernames.
+5. Given a completed or partial `asset_ops` run, when results exist, then chat renders a Slack-style CSV attachment (filename, row count, column headers, first preview rows, copy, download). Canvas is not required.
+6. Given a connector outage, when other sources succeed, then the CSV still downloads with explicit per-source error or not-found columns and the run is `partial`, not discarded.
+7. Given a Workspace User, when they use this skill, then they never see scripts, SKILL.md, credentials, or tool-configuration screens.
 
 ## 4. Scope Notes
 
-- **In Scope for MVP**: Skill binding, 4-name routing threshold, ServiceNow + Jamf + Intune collection for this skill, chat CSV artifact with preview/copy/download, canvas persistence of the same evidence.
-- **Deferred**: `asset_report_app` (application health is a separate skill); Cortex XDR and Tenable on this skill; free-form Claude Code shell; user-uploaded unreviewed scripts.
+- **In Scope for MVP**: Skill binding (`asset-ops` for lists, `device-lookup` for one id), ServiceNow + Jamf + Intune collection for this skill, chat CSV artifact with preview/copy/download.
+- **Deferred**: `asset_report_app` (application health is a separate skill); Cortex XDR and Tenable on this skill; canvas as the primary result surface; free-form Claude Code shell; user-uploaded unreviewed scripts; `jamf_group_sync` without confirmation.
 
 ## 5. Traceability
 
@@ -38,7 +39,7 @@ As a Workspace User, I want to type a request such as "look up these users devic
 
 ## Assumptions
 
-- The local tree `/Users/nick.sanchez/development-test2/.claude/skills/asset-ops/scripts` was not mounted in this environment. Behavior is taken from the SAD's reviewed copies of the same three report scripts.
+- The skill pack `docs/.claude/skills/` on `origin/master` `af27545` is authoritative.
 
 ## Open Questions
 
@@ -48,3 +49,4 @@ As a Workspace User, I want to type a request such as "look up these users devic
 ## Audit
 
 - 2026-08-29 | `system-arch` | `create-stories` (supporting SFS) | Created from requestor skill-packaging goal and existing PRD dual-engine routing.
+- 2026-08-29 | `system-arch` | `align-skill-pack` | Four pasted names use `asset_ops` scripts, not MCP fan-out.

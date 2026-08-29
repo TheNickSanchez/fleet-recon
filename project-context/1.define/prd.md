@@ -12,7 +12,7 @@ MVP has one operational role:
 
 - **Workspace User:** uses the prebaked chat, pastes names or CSV, receives `chat.csv_preview` (copy/download). Cannot see MCP credentials, SKILL.md, or scripts.
 
-Administrator tool catalog, credential vault, connection diagnostics, live canvas collaboration, and confirmation-gated mutation console are **Future Work** (former FR-5 through FR-9). Credentials stay in MCP server configuration. If a write skill is later exposed, confirmation is required in chat before the host invokes a mutating tool.
+- Administrator tool catalog, credential vault, connection diagnostics, live canvas collaboration, and confirmation-gated mutation console are **Future Work** (former FR-5 through FR-9). Credentials stay in MCP server configuration and `passkey` profiles. If a write skill is later exposed, confirmation is required in chat before the host invokes a mutating tool.
 
 ## 3. MVP Experience
 
@@ -96,16 +96,16 @@ sequenceDiagram
 - CSV uploads must enforce a configurable file-size and row-count limit, allowed MIME/type policy, required username column mapping, encoding handling, and malware scanning if the enterprise upload service requires it.
 - Every accepted request creates a query run with a UUID, initiator, bound `skill_id`, input type, sanitized identity count, routing decision, status, and correlation ID.
 
-### FR-2: Dual-Engine Routing
+### FR-2: Skill Bind and Execution Engine
 
 | Condition | Required Route | Behavior |
 | --- | --- | --- |
-| 1-4 unique identities and no CSV upload | Micro-query | Host sets `allowed_tools` from the intent table. The Agent SDK session calls ServiceNow/Jamf/Intune MCP tools in parallel per name. Stream progress; write session CSV; emit `chat.csv_preview`. |
-| More than 4 unique identities | Batch automation | Host writes a temp username CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py`. Names stay out of model context. Same `chat.csv_preview`. |
-| Any CSV upload | Batch automation | Validate and transform upload to internal CSV payload before job enqueue. |
+| One serial, hostname, or username; no pasted list; no CSV | `device_lookup` | Host sets `allowed_tools` from `device-lookup` SKILL.md. Agent SDK calls the primary MCP tool immediately. Conversational card. Tenable only for vuln phrasing. |
+| Pasted name list (any unique count after sanitization, including 4) | `asset_ops` | Host writes a temp username CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py`. Agent reads the script **summary**, never the CSV body. Emit `chat.csv_preview`. Do **not** fire `device-lookup` once per name. |
+| Any CSV upload | `asset_ops` | Validate and transform upload to internal CSV payload, then the same two scripts. |
 | Invalid or empty normalized identities | Reject | Explain validation error and do not call connectors or agents. |
 
-Routing is evaluated after skill binding, sanitization, and deduplication. The constant is `MICRO_QUERY_MAX_SUBJECTS = 4`. The decision must be stored and testable. A request never changes route mid-run; a retry creates a new run referencing the original run. Skill binding selects which connectors run; routing only selects micro-query vs batch execution of that skill.
+Routing is evaluated after skill binding, sanitization, and deduplication. The decision must be stored and testable. A request never changes route mid-run; a retry creates a new run referencing the original run. Skill binding selects which connectors run. `MICRO_QUERY_MAX_SUBJECTS = 4` is **not** used to choose MCP vs scripts for a name list; it is only a cap if a later live-card MCP fan-out is added.
 
 ### FR-3: Connector Collection
 
@@ -137,7 +137,7 @@ Administrator tool registry, credential vault, and connection-health console ass
 ### FR-10: Chat Result Artifacts
 
 - When a skill produces tabular results, chat must render a first-class `chat.csv_preview` card: filename, row count, header row, a capped preview of data rows, truncation label, Copy, and Download.
-- Both the ≤4 MCP path and the >4 script path emit this same payload. Preview is a bounded subset of a session-scoped report file, never a second LLM-written table.
+- Both 4-name and 50-name `asset_ops` runs emit this same payload. Preview is a bounded subset of a session-scoped report file, never a second LLM-written table. Columns match asset-ops step 1+2.
 - Copy and download must be usable in Excel or Google Sheets without a canvas.
 - Artifacts exclude secrets, authorization headers, and unredacted raw vendor payloads.
 
@@ -170,19 +170,19 @@ MVP persists a session run record (`intent_id`, identity count, `mode`, path to 
 
 There is no CrewAI Orchestrator/Analysis/Dispatch crew in MVP. The session host:
 
-1. Matches intent (device lookup / app health / security) and locks MCP `allowed_tools`.
-2. Routes ≤4 vs >4.
-3. For ≤4, lets the Agent SDK call only those MCP tools in parallel.
-4. For >4, execs the asset-ops scripts itself.
-5. Always renders `chat.csv_preview`.
+1. Matches intent (device lookup / app health / security) and locks MCP `allowed_tools` when MCP is in play (`device-lookup` or optional step 1.5).
+2. Binds `device_lookup` (one identifier) vs `asset_ops` (name list or CSV).
+3. For `device_lookup`, lets the Agent SDK call only those MCP tools for that one id.
+4. For `asset_ops`, execs the asset-ops scripts itself; the model never receives the CSV body.
+5. Always renders `chat.csv_preview` for `asset_ops` runs.
 
 Former agent specs are Future Work with the enterprise workspace.
 
 ## 7. Non-Functional Requirements
 
 - **Security:** MCP credentials stay in server config; chat and CSV never include secrets. The session host is not an open internet proxy to org APIs.
-- **Performance:** ≤4 first progress within 10 seconds; batch does not iterate names in the model.
-- **Testing:** unit tests for sanitization, stopwords, threshold 4, intent allowlists; integration tests against MCP fixtures or recorded MCP payloads.
+- **Performance:** `device_lookup` first progress within 10 seconds; `asset_ops` does not iterate names in the model and does not ingest the CSV body.
+- **Testing:** unit tests for sanitization, stopwords, skill bind (one id vs list), intent allowlists; integration tests against MCP fixtures or recorded MCP payloads and script fixtures.
 
 ## 8. Prioritized Product User Stories and Acceptance Criteria
 
@@ -192,19 +192,19 @@ Former agent specs are Future Work with the enterprise workspace.
 
 As a Workspace User, I want to ask "look up these users devices" and paste names so that ServiceNow, Jamf, and Intune evidence comes back as a spreadsheet-ready CSV in chat.
 
-- **AC-8.1:** Instruction prose is not treated as usernames; 1–4 unique identities take micro-query (MCP in parallel); 5 or more, or any CSV, take host-invoked `asset_report_build` then `asset_report_mdm`.
-- **AC-8.2:** Device-lookup intent does not invoke `asset_report_app`, Cortex XDR, or Tenable.
+- **AC-8.1:** Instruction prose is not treated as usernames. A pasted name list (including 4 names) or any CSV takes host-invoked `asset_report_build` then `asset_report_mdm`. A single serial/hostname/user with no list takes `device-lookup` MCP.
+- **AC-8.2:** Device-lookup name-list intent does not invoke `asset_report_app`, Cortex XDR, Tenable, or N× `device-lookup`.
 - **AC-8.3:** Chat shows `chat.csv_preview` (preview, copy, download). Canvas is not required.
-- **AC-8.4:** For >4 names, the model does not receive the identity list. For ≤4, MCP `allowed_tools` is locked to the intent table.
+- **AC-8.4:** For `asset_ops`, the model does not receive the identity list or CSV body. MCP `allowed_tools` is locked when MCP is used.
 
 US-1 through US-7 (credential vault, health console, tool admin, canvas, analysis playbooks) are **Future Work**.
 
 ## 9. MVP Acceptance Criteria
 
-1. A request with four unique valid identities and no CSV routes to micro-query (MCP); one with five routes to host-invoked scripts after normalization. Instruction words in "look up these users devices" are not identities.
+1. A request with four unique valid identities and no CSV binds `asset_ops` (host-invoked scripts) after normalization. Instruction words in "look up these users devices" are not identities. One serial with no list binds `device_lookup`.
 2. A CSV upload takes the script path regardless of row count. The user-facing download is the device result file, not the upload.
 3. A partial MCP or script failure still produces `chat.csv_preview` with per-source error columns.
-4. Device-lookup intent does not call Cortex, Tenable, or `asset_report_app`.
+4. Device-lookup name-list intent does not call Cortex, Tenable, `asset_report_app`, or `device-lookup` MCP per name.
 5. Copy and Download work from the chat card without a canvas.
 
 Canvas collaboration, OIDC admin vault, and confirmation-gated mutations are not MVP acceptance criteria.
@@ -220,9 +220,10 @@ Canvas collaboration, OIDC admin vault, and confirmation-gated mutations are not
 
 ## Assumptions
 
-- Existing ServiceNow/Jamf/Intune MCP servers in `development-test2` are the connectors for MVP.
-- Exact MCP tool names are confirmed at implementation time.
+- Existing ServiceNow/Jamf/Intune MCP servers and `passkey` profiles from the operator’s Claude Code workspace are the connectors for MVP.
+- Exact MCP tool names are those in `docs/.claude/skills/` unless live servers differ.
 - The FastAPI/CrewAI scaffold is leftover, not the ship target.
+- Reviewed skill pack: `docs/.claude/skills/` at `af27545`.
 
 ## Open Questions
 
@@ -235,3 +236,4 @@ Canvas collaboration, OIDC admin vault, and confirmation-gated mutations are not
 - 2026-08-26 | product-mgr | Created PRD from supplied specifications; selected runtime recorded as CrewAI from project configuration.
 - 2026-08-27 | product-mgr | Added administrator tool management and extensibility, credential vault and diagnostics, explicit RBAC boundaries, prioritized user stories, and acceptance criteria.
 - 2026-08-29 | system-arch | Session-host MVP: Claude Agent SDK + MCP + asset-ops scripts; FR-5–FR-9 Future Work; `chat.csv_preview`; threshold 4; US-8. See architecture-fork.md.
+- 2026-08-29 | system-arch | After skill-pack review: FR-2 skill bind is `device_lookup` (one id) vs `asset_ops` (any name list/CSV). Four pasted names use scripts, not MCP fan-out.

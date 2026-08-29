@@ -19,13 +19,13 @@ The first packaged workflow is **Look up users' devices** (`lookup-user-devices`
 ### 1.1 Design Principles
 
 1. **Wrap what already works.** MCP connections and asset-ops scripts are the system of action. The product is a non-developer chat window over them, not a second integration platform.
-2. **Host decides; model fills the allowed slot.** Intent → tool-subset and ≤4 vs >4 routing are deterministic host rules. The model cannot add Cortex/Tenable to a device lookup.
-3. **Same output, either path.** Micro MCP lookups and batch scripts both terminate in `chat.csv_preview` with the same row shape.
+2. **Host decides; model fills the allowed slot.** Skill bind (`device-lookup` vs `asset-ops`) and the intent → tool-subset table are deterministic host rules. The model cannot add Cortex/Tenable to a device lookup, and it cannot fire `device-lookup` once per pasted name.
+3. **Same CSV output for every name list.** Pasted names (including 4) and CSV uploads terminate in `chat.csv_preview` with the step 1+2 column set. Single-identifier `device-lookup` is a conversational card, not four CSV novels.
 4. **Deterministic routing.** Skill binding, sanitization, and deduplication happen before the session is given tools. The stored route never changes during a run.
 5. **Partial failure is a result state.** A failed MCP/script source does not erase successful rows. The CSV still downloads.
-6. **Least privilege per intent.** `allowed_tools` is the intent table, not the full MCP catalog. Secrets stay in MCP server config.
-7. **Batch scripts are host-invoked.** >4 names write a temp CSV and exec `asset_report_build.py` then `asset_report_mdm.py` with a fixed argv. The model does not get unconstrained Bash.
-8. **Evidence before inference.** CSV rows come from MCP/script output, not from model-authored tables.
+6. **Least privilege per intent.** `allowed_tools` is the intent table, not the full MCP catalog. Script steps 1–4 use `passkey` profiles, not an app vault. Secrets stay in MCP/`passkey` config.
+7. **Name-list scripts are host-invoked.** Any pasted name list or CSV writes a temp CSV and execs `asset_report_build.py` then `asset_report_mdm.py` with a fixed argv. The model does not get unconstrained Bash and does not read the CSV body (script stdout summary only).
+8. **Evidence before inference.** CSV rows come from script output (or MCP payloads for one-id lookup), not from model-authored tables.
 
 ### 1.2 MVP Scope
 
@@ -33,10 +33,9 @@ The first packaged workflow is **Look up users' devices** (`lookup-user-devices`
 
 - Prebaked chat window (existing React chat is acceptable as a thin client). Skill chips, not a generic coding agent.
 - Typed requests, pasted usernames, and CSV upload, with instruction prose stripped from identity extraction.
-- Host-side routing: `MICRO_QUERY_MAX_SUBJECTS = 4`; >4 or any CSV → temp CSV + asset-ops scripts.
-- Intent → tool-subset table (device lookup vs app health vs security/vuln).
-- MCP fan-out for ≤4 identities: ServiceNow + Jamf + Intune for device lookup.
-- `asset_report_build.py` → `asset_report_mdm.py` for the batch path (already specified in §2.2 / §2.3).
+- Host-side skill bind: one serial/hostname/user → `device-lookup` MCP; pasted name list or CSV (any count) → host-invoked `asset-ops` steps 1 then 2.
+- Intent → tool-subset table (device lookup vs app health vs security/vuln). `MICRO_QUERY_MAX_SUBJECTS = 4` is only a cap **if** a later live-card MCP fan-out is added; it is not the default for a name list.
+- `asset_report_build.py` → `asset_report_mdm.py` for every name list and CSV (already specified in §2.2 / §2.3). Agent reads the script summary, never the CSV body.
 - One `chat.csv_preview` renderer (inline table, Copy, Download) for both paths, backed by a session-scoped reports file.
 - Claude Agent SDK session with per-intent `allowed_tools` and MCP servers already configured.
 
@@ -52,9 +51,9 @@ The first packaged workflow is **Look up users' devices** (`lookup-user-devices`
 | --- | --- | --- |
 | Session host | One process serving the chat UI and a Claude Agent SDK (or Claude Code) session | Matches `development-test2`: skills + MCP, no distributed backend. |
 | Agent runtime | `claude-agent-sdk` coordinator with per-intent `allowed_tools` | Replaces CrewAI. Hooks (`PreToolUse`) enforce the intent table. |
-| Connectors | Existing MCP servers (ServiceNow, Jamf, Intune); Tenable/Cortex only when the intent table says so | Credentials already live in MCP config; no app vault. |
-| ≤4 execution | Parallel MCP tool calls for each identity | Cheap enough for the model under a locked tool list. |
-| >4 execution | Host writes temp CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py` | Token-saving path the scripts were built for; host-invoked, not free Bash. |
+| Connectors | Existing MCP servers (ServiceNow, Jamf, Intune) for `device-lookup` and optional asset-ops step 1.5; `passkey run servicenow|jamf_api|intune` for asset-ops steps 1–4 | Credentials already live in MCP/`passkey` config; no app vault. Tenable/Cortex only when the intent table says so. |
+| Single identifier | `device-lookup` MCP immediately (`jamf_get_device_summary`, `intune_lookup_device`, `snow_lookup_user_profile`) | Matches `docs/.claude/skills/device-lookup/SKILL.md`. Tenable only for vuln phrasing. |
+| Name list or CSV | Host writes temp CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py` | Matches `docs/.claude/skills/asset-ops/SKILL.md` (MCP none for steps 1–4 except optional 1.5). Host-invoked, not free Bash. |
 | Result files | Session-scoped temp/reports directory | Same pattern as existing report scripts; no object store for MVP. |
 | Chat render | First-class `chat.csv_preview` (headers, preview rows, row_count, file_ref, copy, download) | Identical renderer for both routes. |
 | Frontend | Keep the existing React chat as a thin client; hide canvas/admin or leave them inert | Non-developers need a window, not a second platform. |
@@ -69,10 +68,10 @@ There is no CrewAI crew in MVP. One coordinator session (Claude Agent SDK) runs 
 
 | Component | Goal | Inputs | Outputs | Hard boundary |
 | --- | --- | --- | --- | --- |
-| Intent + identity preprocessor | Bind intent table row; extract identities; choose ≤4 vs >4 | Raw chat text or CSV | `intent_id`, identity list, `mode`, `allowed_tools` | Must not call MCP or scripts itself except through the paths below |
-| Claude Agent SDK session | Use only `allowed_tools` to fill rows for ≤4, or to present script output for >4 | Preprocessor result, MCP tools if `mode=micro_query` | Structured row list or path to report CSV; user-safe status | Cannot expand `allowed_tools`; cannot invoke unconstrained Bash |
-| Host script runner | >4 or CSV upload | Sanitized username CSV path | Report CSV in session reports dir | Fixed argv: `asset_report_build.py` then `asset_report_mdm.py` (plus `asset_report_app.py` only if intent is app health) |
-| `chat.csv_preview` renderer | Slack-style file card | Normalized rows or report CSV | Preview, copy, download | Same component for both modes |
+| Intent + identity preprocessor | Bind skill (`device-lookup` vs `asset-ops`) and intent table row; extract identities | Raw chat text or CSV | `intent_id`, `skill_id`, identity list or identifier, `mode`, `allowed_tools` | Must not call MCP or scripts itself except through the paths below |
+| Claude Agent SDK session | Present script summaries / `chat.csv_preview` for name lists; call MCP only for `device-lookup` (one id) or optional step 1.5 | Preprocessor result; MCP tools only when `mode=device_lookup` (or step 1.5) | Path to report CSV or conversational lookup card; user-safe status | Cannot expand `allowed_tools`; cannot invoke unconstrained Bash; cannot read CSV body into context |
+| Host script runner | Pasted name list (any count) or CSV upload | Sanitized username CSV path | Report CSV in session reports dir | Fixed argv: `asset_report_build.py` then `asset_report_mdm.py` (plus `asset_report_app.py` only if intent is app health). Optional step 1.5 MCP fill is a separate host-gated step. |
+| `chat.csv_preview` renderer | Slack-style file card | Report CSV from asset-ops | Preview, copy, download | Same component for 4 names and 50 names |
 
 Former Orchestrator/Analysis/Dispatch CrewAI specifications remain Future Work if the enterprise workspace is built later.
 
@@ -86,11 +85,11 @@ The three supplied scripts are treated as approved capability adapters, not as u
 | `asset_report_mdm` | Step 2. Routes macOS rows to batched Jamf inventory (`GENERAL`, `HARDWARE`) and Windows rows to Intune serial lookup plus managed-device metadata. Preserves duplicate serial rows and marks not-found/lookup-error states explicitly. | Step 1 device evidence; `jamf_batch_size`, `intune_workers`, and max-age policy are bounded worker settings, not unrestricted user flags. | `MdmEvidence` with provider, managed/unmanaged/not-found status, last check-in, compliance, management agent, detail, source record reference, and safe error category. Jamf and Intune calls use separate connector credentials and rate limits. |
 | `asset_report_app` | Step 3. For macOS, resolves an app-specific Jamf extension attribute first and falls back to Jamf application inventory; for Windows, queries Intune managed-app states. Classifies raw status as healthy/unhealthy/unknown and preserves provenance. | Step 1 device evidence; required `app` value; approved per-app signal-map rule; bounded Jamf batch size and Intune worker count. Signal-map rules are versioned configuration, not arbitrary executable logic. | `ApplicationEvidence` with app, raw status, health classification, source, versions/detail, and safe error category. EA ambiguity and fallback source are explicit evidence metadata. |
 
-The scripts currently use CLI arguments, environment variables, `requests`, `pandas`, `PyYAML`, and a shared `fleet_common` module. **MVP uses them as subprocesses** (batch path) rather than reimplementing them as FastAPI connectors. Do not wrap them in a job queue to ship device lookup. Future Work may still turn CLI flags into schema-backed config if the enterprise workspace is built.
+The scripts currently use CLI arguments, environment variables, `requests`, `pandas`, `PyYAML`, and a shared `fleet_common` module. **MVP uses them as subprocesses** for every name list and CSV rather than reimplementing them as FastAPI connectors or as N parallel MCP novels. Do not wrap them in a job queue to ship device lookup. Future Work may still turn CLI flags into schema-backed config if the enterprise workspace is built.
 
 ### 2.3 Script Pipeline and Execution Controls
 
-For a batch run, the **session host** executes the scripts in order (not a Redis worker):
+For a **name-list or CSV** run, the **session host** executes the scripts in order (not a Redis worker):
 
 1. `asset_report_build` consumes the sanitized input CSV and produces the canonical device set.
 2. `asset_report_mdm` consumes eligible device rows and fans out by platform (Jamf batch, Intune per-device) as the scripts already do.
@@ -104,9 +103,9 @@ The host must not pass arbitrary user environment into the subprocess. MCP/scrip
 
 Secrets and model credentials come from environment variables (`ANTHROPIC_API_KEY` and MCP server env). Per-request controls:
 
-- `allowed_tools`: computed from the intent table (below). Device lookup = ServiceNow + Jamf + Intune MCP tools only.
+- `allowed_tools`: computed from the intent table (below). Name-list device lookup = **no MCP** for steps 1–4 (passkey scripts). Single-id `device-lookup` = ServiceNow + Jamf + Intune MCP tools only. Optional asset-ops step 1.5 = `jamf_get_user_devices` and `intune_lookup_users` only.
 - `PreToolUse` hook: reject any tool not on that list (including Tenable/Cortex and unconstrained Bash).
-- Turn/token budget: sized for ≤4 parallel MCP lookups; batch path should not spend turns iterating names.
+- Turn/token budget: sized so the model never ingests the CSV body; it reads script summaries only. Name-list path should not spend turns iterating names.
 - No persistent agent memory across requestors; session files are the retention.
 
 CrewAI YAML (`backend/agents/config/*.yaml`) is not used for MVP. It remains in the repo only as leftover from the enterprise scaffold.
@@ -118,20 +117,22 @@ CrewAI YAML (`backend/agents/config/*.yaml`) is not used for MVP. It remains in 
 1. Session host accepts chat text or CSV from the thin UI.
 2. Match intent (table in §2.8). Strip instruction prose. Sanitize and deduplicate identities.
 3. If the phrase matches but no identities remain, ask for names. Do not call MCP or scripts.
-4. Route: 1–4 unique identities and not a CSV → `micro_query`. 5+ or any CSV → `batch_automation`. Persist `mode` on the session run record (in-memory or session file is enough).
+4. Skill bind and persist `mode` on the session run record (in-memory or session file is enough):
+   - **One** serial, hostname, or username and no CSV / no pasted list → `device_lookup`.
+   - Pasted **name list** (any unique count after sanitization, including 4) or any CSV → `asset_ops`.
+   Never bind `device-lookup` once per name in a list. `MICRO_QUERY_MAX_SUBJECTS = 4` is not used to choose MCP vs scripts for a list.
 
-#### Micro-query (≤4)
+#### Single-identifier (`device_lookup`)
 
-1. Set `allowed_tools` to the intent row’s MCP tools (device lookup: ServiceNow user/device, Jamf lookup, Intune device lookup — names as in the live MCP server, e.g. `snow_lookup_user_profile`, `snow_lookup_device_details`, Jamf lookup, `intune_lookup_device`).
-2. Run the Agent SDK session so those tools can be called **in parallel per name**. The model may orchestrate the four identities; it may not add tools.
-3. Normalize MCP payloads into the common row shape (user, serial, platform, MDM status, …).
-4. Write the session report CSV and emit `chat.csv_preview`. Do not require canvas or Postgres.
+1. Set `allowed_tools` from `docs/.claude/skills/device-lookup/SKILL.md` (e.g. `jamf_get_device_summary`, `intune_lookup_device`, `snow_lookup_user_profile`). Tenable only if the phrasing is vulnerability assessment.
+2. Run the Agent SDK session so the primary MCP tool runs **immediately** for that one identifier.
+3. Render a conversational lookup card (OS/compliance/last check-in/assigned user). This path is not the Slack CSV card unless the operator later asks to export.
 
-#### Batch (>4 or CSV)
+#### Name list or CSV (`asset_ops`)
 
-1. Host writes a temp username CSV.
-2. Host subprocess: `asset_report_build.py` then `asset_report_mdm.py` (and `asset_report_app.py` only for app-health intent).
-3. Host reads the script output file, emits the **same** `chat.csv_preview`. The model is not given the name list to iterate.
+1. Host writes a temp username CSV (`Usernames` / `Username` / `Email` / `User Email` as in the skill). Domains are stripped by the scripts.
+2. Host subprocess: `passkey`-style env + `asset_report_build.py` then `asset_report_mdm.py` (and `asset_report_app.py` only for app-health intent). Optional step 1.5 is host-gated MCP (`jamf_get_user_devices`, `intune_lookup_users`) and is **not** the default for "look up these users devices".
+3. Host reads the script output file, emits **`chat.csv_preview`**. The model is given the compact stdout **summary**, never the CSV body, and is not given the name list to iterate. Unconstrained Bash is not allowed.
 
 #### Action flow
 
@@ -141,18 +142,18 @@ Deferred. If a write skill is later enabled, confirmation must happen in chat be
 
 MVP agent context:
 
-- `intent_id`, `mode`, `input_count`, correlation/session id.
-- For ≤4: the identity list **may** be in session context (four names) so MCP tools can be called per name.
-- For >4: identity list is **not** in model context; only “batch job on N names” plus path to the result file after the host finishes.
-- No MCP tokens, raw vendor dumps, or unrestricted query strings in traces.
+- `intent_id`, `skill_id`, `mode`, `input_count`, correlation/session id.
+- For `device_lookup`: the single identifier may be in session context.
+- For `asset_ops`: identity list is **not** in model context; only “asset-ops job on N names” plus path to the result file after the host finishes. Script stdout summary may be in context; CSV body must not.
+- No MCP/`passkey` tokens, raw vendor dumps, or unrestricted query strings in traces.
 
-Both paths must emit `chat.csv_preview`:
+Name-list / CSV runs must emit `chat.csv_preview` with **asset-ops step 1+2 columns**:
 
 ```json
 {
   "type": "chat.csv_preview",
   "filename": "devices-<session>-<run>.csv",
-  "headers": ["username", "serial", "hostname", "platform", "cmdb_state", "mdm_provider", "mdm_status", "last_check_in", "compliance", "source_errors"],
+  "headers": ["Username", "Serial", "Platform", "State", "Substate", "Model", "Asset Tag", "Notes", "MDM", "MDM Status", "MDM Last Check-In", "MDM Detail"],
   "preview_rows": [],
   "row_count": 0,
   "truncated": false,
@@ -164,28 +165,33 @@ Copy and Download use that file. Preview cap: 10 data rows.
 
 ### 2.7 Error Handling, Retry, Cancellation, and Budgets
 
-- MCP/script errors become per-row `source_errors`. Other identities continue.
+- MCP/script errors become per-row `Notes` / `MDM Detail` (or equivalent skip/error cells). Other identities continue.
 - Host subprocess failure: run `failed` or `partial` if a report file still has rows.
 - Cancellation: stop starting new MCP calls / kill the script process if still running; keep files already written.
-- ≤4 target: first progress within 10 seconds; complete within 30 seconds excluding vendor outage.
-- Batch: accept immediately; stream script progress if available; do not poll via extra model turns.
+- `device_lookup` target: first progress within 10 seconds; complete within 30 seconds excluding vendor outage.
+- `asset_ops`: accept immediately; stream script progress if available; do not poll via extra model turns. Four names and fifty names use the same engine.
 
 ### 2.8 Intent table and skill pack
 
 Claude Code skills **are** the runtime (SKILL.md + scripts + MCP), not a packaging step into Postgres `WorkflowDefinition` rows. The chat window is prebaked: chips map to intent rows. Non-developers never open SKILL.md or a terminal.
 
+Authoritative pack: `docs/.claude/skills/` (`origin/master` `af27545`).
+
 | Intent | Example phrasing | MCP / scripts | Forbidden |
 | --- | --- | --- | --- |
-| Device lookup | "look up these users devices" | SN + Jamf + Intune MCP (≤4); `asset_report_build` → `asset_report_mdm` (>4) | Cortex, Tenable, `asset_report_app` |
-| App health | app / extension-attribute asks | Device-lookup set **plus** `asset_report_app` | Cortex, Tenable unless also asked |
-| Security / vuln | vulnerability, exposure, Tenable, Cortex | Device-lookup set **plus** Tenable MCP (Cortex only if the skill declares it) | Unrelated mutation tools |
+| Device lookup (name list) | "look up these users devices" + pasted names or CSV | Host-invoked `asset_report_build` → `asset_report_mdm`. MCP **none** for steps 1–4. Optional step 1.5 only if asked to fill SN gaps. | Cortex, Tenable, `asset_report_app`, N× `device-lookup` |
+| Device lookup (one id) | one serial, hostname, or user; no list | `device-lookup` MCP: `jamf_get_device_summary`, `intune_lookup_device`, `snow_lookup_user_profile` | Cortex; Tenable unless vuln phrasing; asset-ops CSV pipeline |
+| App health | app / extension-attribute asks | Device-lookup name-list set **plus** `asset_report_app` | Cortex, Tenable unless also asked |
+| Security / vuln | vulnerability, exposure, Tenable, Cortex | `device-lookup` / vuln skill **plus** Tenable MCP (Cortex only if the skill declares it) | Unrelated mutation tools; `jamf_group_sync` without confirm |
 
 | Claude Code path | MVP use |
 | --- | --- |
-| `.claude/skills/asset-ops/SKILL.md` | Trigger text and procedure for device lookup |
-| `scripts/asset_report_build.py` | Batch step 1 (and the logic MCP mirrors for ≤4) |
-| `scripts/asset_report_mdm.py` | Batch step 2 |
+| `docs/.claude/skills/asset-ops/SKILL.md` | Pasted-name-list / spreadsheet path (steps 1 then 2 for this example) |
+| `docs/.claude/skills/device-lookup/SKILL.md` | One identifier, MCP immediately, no ticket |
+| `scripts/asset_report_build.py` | Step 1 (passkey `servicenow`) |
+| `scripts/asset_report_mdm.py` | Step 2 (passkey `jamf_api` / `intune`) |
 | `scripts/asset_report_app.py` | App-health intent only |
+| `scripts/jamf_group_sync.py` | Write skill; confirmation required; `--mode replace` is dangerous |
 
 ## 3. Frontend Architecture Specification
 
@@ -221,10 +227,10 @@ The desktop layout uses two independently scrollable panels: chat on the left an
 
 **Chat:**
 
-- Empty state lists enabled `WorkflowDefinition` chips. Selecting **Look up users' devices** sets composer intent and helper text ("Paste names; 1–4 look up immediately, 5+ run as a spreadsheet job").
+- Empty state lists enabled `WorkflowDefinition` chips. Selecting **Look up users' devices** sets composer intent and helper text ("Paste names or upload CSV; results come back as a spreadsheet in chat").
 - Text composer accepts natural-language requests and pasted usernames. The client preview uses the same instruction-stripping rules as the server; the server remains authoritative.
 - A plus menu contains CSV upload and permitted action shortcuts; connector configuration is administrator-only.
-- Messages show status, partial failures, and a first-class **`chat.csv_preview`** card (filename, row count, header + up to 10 rows, Copy, Download). Both ≤4 MCP and >4 script paths use this component only.
+- Messages show status, partial failures, and a first-class **`chat.csv_preview`** card (filename, row count, header + up to 10 rows, Copy, Download). Every `asset_ops` run uses this component. Single-id `device_lookup` uses a conversational card, not N CSV novels.
 - Artifact files live in a session-scoped reports directory; the card is not an LLM-authored second table.
 - Upload state shows validation, rejected-count summary, and server-created run ID without echoing sensitive raw content.
 
@@ -517,22 +523,23 @@ User: look up these users devices
       jordan.nguyen
 ```
 
-1. **Skill bind.** `SkillMatcher` maps the phrase to `lookup-user-devices`. Required tools: `asset_report_build`, `asset_report_mdm`. Cortex, Tenable, and `asset_report_app` are not invoked.
-2. **Identity extract.** Stopwords `look`, `up`, `these`, `users`, `devices` are dropped. Four unique usernames remain. `mode=micro_query`.
-3. Python lookups via MCP (≤4) or host scripts (>4). For each username, ServiceNow resolves user and assigned hardware; platform routes to Jamf or Intune. Cortex and Tenable are not called.
-4. **Chat CSV.** Emit `chat.csv_preview` for a session report file. Slack-style card: filename, row count, header, first 10 rows, Copy, Download.
+1. **Skill bind.** `SkillMatcher` maps the phrase plus a pasted **list** to `asset-ops` (`lookup-user-devices`). Required tools: host-invoked `asset_report_build`, `asset_report_mdm`. Cortex, Tenable, `asset_report_app`, and `device-lookup` MCP are not invoked.
+2. **Identity extract.** Stopwords `look`, `up`, `these`, `users`, `devices` are dropped. Four unique usernames remain. `mode=asset_ops`, `input_count=4`.
+3. Host writes a small username CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py` (computer platforms). ServiceNow resolves user and assigned hardware; platform routes to Jamf or Intune inside those scripts. The model reads the stdout **summary**, never the CSV body.
+4. **Chat CSV.** Emit `chat.csv_preview` for the session report file. Slack-style card: filename, row count, header, first 10 rows, Copy, Download. Columns match asset-ops step 1+2.
 5. Canvas is optional Future Work. The requestor gets the CSV in chat without opening a dashboard.
 
-If the paste contains **five or more** names, the host writes a temp `username` CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py`. The model does not iterate those names. Both paths emit the same `chat.csv_preview`.
+If the paste contains **one** serial/hostname/user and no list, bind `device-lookup` MCP instead (conversational card). Fifty names use the same `asset_ops` engine as four. Both list sizes emit the same `chat.csv_preview`.
 
-Today’s **enterprise scaffold** (FastAPI queue-only runs, CrewAI YAML, no MCP) cannot complete this example. The **session-host MVP** can: preprocessor + MCP/scripts + `chat.csv_preview`. See [architecture-fork.md](architecture-fork.md).
+Today’s **enterprise scaffold** (FastAPI queue-only runs, CrewAI YAML, no MCP) cannot complete this example. The **session-host MVP** can: preprocessor + host scripts + `chat.csv_preview`. See [architecture-fork.md](architecture-fork.md).
 
 ## 7. Performance & Scalability Specifications
 
 ### 7.1 MVP Targets
 
-- First micro-query progress event: within 10 seconds under healthy connector conditions.
-- Normal micro-query completion: within 30 seconds for up to four users, excluding vendor outage time.
+- First `device_lookup` progress event: within 10 seconds under healthy connector conditions.
+- Normal `device_lookup` completion: within 30 seconds for one identifier, excluding vendor outage time.
+- `asset_ops` acceptance: within 2 seconds after successful validation; four names and fifty names use the same script engine.
 - Batch acceptance response: within 2 seconds after successful validation and object persistence.
 - Batch progress: at least one persisted progress event per connector milestone or every 10 seconds for active work.
 - Canvas mutation broadcast: 99.9% delivered to connected collaborators within five seconds.
@@ -576,7 +583,7 @@ Data residency, audit retention duration, endpoint identifier classification, ve
 ### 9.1 Unit Tests
 
 - Skill matching, instruction-stopword stripping, and `ResultArtifact` preview-row cap.
-- Routing threshold: four unique identities without CSV is micro-query; five is batch; every CSV is batch; instruction stopwords are not identities; invalid input is rejected without connector calls.
+- Skill bind: one identifier without a list is `device_lookup`; a pasted name list (including 4) or any CSV is `asset_ops`; instruction stopwords are not identities; invalid input is rejected without connector calls. A 4-name list must not invoke `device-lookup` MCP four times.
 - CSV size, row, MIME/type, encoding, required-column, and upload-scan-hook behavior.
 - Connector normalization and redaction for each adapter.
 - `asset_report_build` username-column detection, normalization, ServiceNow state/platform filtering, one-row-per-device behavior, placeholder serial handling, and explicit no-device/not-found output.
@@ -595,7 +602,7 @@ Use vendor sandbox or deterministic fixtures to verify the shared connector cont
 
 ### 9.3 Smoke and Acceptance Tests
 
-1. Four valid unique identities route to micro-query and five route to batch after normalization. "look up these users devices" plus four names yields `input_count=4`.
+1. Four valid unique identities plus "look up these users devices" bind `asset_ops` with `input_count=4` and produce `chat.csv_preview`. One serial with no list binds `device_lookup`.
 2. A small CSV routes to batch and leaves an immutable sanitized input reference.
 3. One connector failure leaves successful source evidence visible and marks the run partial.
 4. Two authenticated clients observe a check-state or assignment update within five seconds.
@@ -649,32 +656,33 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 ## Implementation Guidance for AI Development Agents
 
 1. Point the existing React chat at a session host that runs Claude Agent SDK (or Claude Code) with org MCP servers already configured.
-2. Implement the preprocessor: intent table, instruction stripping, threshold 4, unit tests. Do not start with Postgres.
-3. ≤4: lock `allowed_tools` to SN/Jamf/Intune MCP; call in parallel; normalize to the common row shape.
-4. >4: host-write temp CSV; subprocess the two asset-ops scripts; do not give the model unconstrained Bash.
-5. One `chat.csv_preview` component (preview table, copy, download) for both paths; session-scoped reports directory.
+2. Implement the preprocessor: intent table, instruction stripping, skill bind (`device-lookup` vs `asset-ops`), unit tests. Do not start with Postgres.
+3. One identifier: lock `allowed_tools` to `device-lookup` MCP; run immediately; conversational card.
+4. Name list or CSV: host-write temp CSV; subprocess the two asset-ops scripts; do not give the model unconstrained Bash or the CSV body.
+5. One `chat.csv_preview` component (preview table, copy, download) for all `asset_ops` runs; session-scoped reports directory.
 6. Leave CrewAI YAML, Redis, OIDC, admin credential UI, and canvas collaboration unimplemented for this MVP.
-7. Confirm MCP tool names against the live servers (`snow_lookup_*`, Jamf, `intune_lookup_device`).
-8. Security: the host must not be an open proxy to org MCP; keep a private access boundary even without full OIDC.
+7. Confirm MCP tool names against the live servers and `docs/.claude/skills/` (`snow_lookup_user_profile`, `jamf_get_device_summary`, `intune_lookup_device`, step 1.5 `jamf_get_user_devices` / `intune_lookup_users`).
+8. Security: the host must not be an open proxy to org MCP or passkey profiles; keep a private access boundary even without full OIDC. Confirm `jamf_group_sync.py` before any write.
 
 ### Build revision inventory (session-host MVP)
 
 | Area | Change |
 | --- | --- |
 | Runtime | `aamad.config.yml` / `AAMAD_TARGET_RUNTIME=claude-agent-sdk`. Stop treating CrewAI kickoff as the product. |
-| Host router | New preprocessor + script runner (can live beside or replace `backend/services.py` route/queue behavior). |
-| MCP | Use existing ServiceNow/Jamf/Intune MCP; do not reimplement connectors in FastAPI to ship the example. |
-| Chat UI | `parseInput.ts` threshold 4 + stopwords; skill chips; `chat.csv_preview` card in `Message.tsx`. |
+| Host router | New preprocessor + script runner (can live beside or replace `backend/services.py` route/queue behavior). Name lists always `asset_ops`. |
+| MCP | Use existing ServiceNow/Jamf/Intune MCP for `device-lookup` and optional step 1.5; do not reimplement connectors in FastAPI to ship the example. |
+| Chat UI | Skill chips; `chat.csv_preview` card in `Message.tsx`. Do not treat 4 names as four MCP novels. |
 | Do not build now | Postgres, Redis, OIDC, tool-admin, credential vault, canvas as the primary result surface. |
 
 ## Architecture Validation Checklist
 
-- [x] Device-lookup example mapped to MCP + scripts + `chat.csv_preview`.
-- [x] Intent → tool-subset table is explicit.
-- [x] ≤4 vs >4 routing specified; batch path reuses SAD §2.2 scripts.
-- [x] Secrets remain in MCP/env names, not chat.
+- [x] Device-lookup example mapped to `asset-ops` scripts + `chat.csv_preview`; one-id path mapped to `device-lookup` MCP.
+- [x] Intent → tool-subset table is explicit; name lists do not use MCP for steps 1–4.
+- [x] Skill bind specified; batch path reuses SAD §2.2 scripts for any list size.
+- [x] Secrets remain in MCP/`passkey`/env names, not chat.
 - [x] Enterprise stack explicitly Future Work.
 - [x] `AAMAD_TARGET_RUNTIME=claude-agent-sdk` is resolved and recorded in Audit.
+- [x] Committed skill pack `docs/.claude/skills/` reviewed (`af27545`).
 
 ## Sources
 
@@ -683,17 +691,16 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - [AAMAD configuration](../../aamad.config.yml).
 - [AAMAD SAD template](../../.cursor/templates/sad-template.md).
 - [AAMAD agent framework overview](../../AGENTS.md).
-- Reviewed capability sources: `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_build.py`, `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_mdm.py`, and `/Users/nick.sanchez/work-archived-2026-08-27/scripts/asset_report_app.py`. The requestor’s later path `/Users/nick.sanchez/development-test2/.claude/skills/asset-ops/scripts` was not mounted in this environment; those filenames are treated as the same three capabilities.
-- [architecture-fork.md](architecture-fork.md).
-- Claude session-host proposal (2026-08-29): MCP + skills, no CrewAI/Postgres/Redis/OIDC vault for MVP.
+- Reviewed capability sources: `docs/.claude/skills/asset-ops/` and `docs/.claude/skills/device-lookup/` on `origin/master` `af27545`. Earlier SAD review also used archived copies of `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py`.
+- [architecture-fork.md](architecture-fork.md) §7 skill-pack review.
 
 ## Assumptions
 
 - The attached PRD’s **enterprise** admin/canvas/OIDC requirements are deferred; the requestor goal and architecture-fork.md are authoritative for MVP scope.
 - CrewAI is **not** the MVP runtime. PostgreSQL, Redis, and OIDC are Future Work, not pilot dependencies.
-- MCP servers for ServiceNow, Jamf, and Intune are already configured in the operator’s Claude Code environment (`development-test2`).
-- Exact MCP tool names will be confirmed at implementation time against the live server list.
-- "Look them up individually" for ≤4 means parallel MCP tool calls under a locked allowlist, not unconstrained model Bash.
+- MCP servers for ServiceNow, Jamf, and Intune are already configured in the operator’s Claude Code environment; asset-ops steps 1–4 use `passkey` profiles, not MCP (except optional step 1.5).
+- Exact MCP tool names are those in `docs/.claude/skills/` SKILL.md files unless live servers differ at implementation time.
+- A pasted name list is `asset-ops`, not N parallel `device-lookup` MCP calls. "Look them up individually" for four names means one row per device in the CSV, not four chat novels.
 - Vendor API permissions and exact field mappings are finalized during the Build integration phase.
 - A single workspace can contain multiple authenticated collaborators, while the MVP remains single-tenant per deployment.
 
@@ -716,3 +723,4 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - 2026-08-27 | `system-arch` | `create-sad` | Resolved `AAMAD_TARGET_RUNTIME=crewai` from `aamad.config.yml`; created the MVP Solution Architecture Document from the Fleet Recon PRD, MRD, and SAD template.
 - 2026-08-27 | `system-arch` | `update-sad` | Incorporated updated PRD administrator requirements and reviewed the three report scripts; defined governed capability adapters, pipeline execution, configuration/credential APIs, health diagnostics, RBAC enforcement, and versioned run snapshots.
 - 2026-08-29 | `system-arch` | `update-sad` | Adopted session-host MVP (`claude-agent-sdk` + MCP + asset-ops scripts). CrewAI/Postgres/Redis/OIDC/admin vault marked Future Work. Intent table, host-invoked batch scripts, `chat.csv_preview`. See architecture-fork.md. Prompt Trace omitted: specification, not a runtime model invocation.
+- 2026-08-29 | `system-arch` | `align-skill-pack` | After `docs/` landed at `af27545`: name lists and CSV always host-invoke `asset-ops` steps 1–2; MCP is `device-lookup` for one identifier; step 1.5 is optional SN-gap fill. Threshold 4 is not the default dual engine for the example request.

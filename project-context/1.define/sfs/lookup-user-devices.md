@@ -12,12 +12,12 @@ This System Functional Specification defines the first packaged Claude Code skil
 
 - **Feature ID**: `lookup-user-devices`
 - **Purpose**: A Workspace User pastes a natural-language request and names (or a CSV). The product binds that request to a pre-registered skill, collects device evidence from ServiceNow, Jamf Pro, and Microsoft Intune using the approved Python capabilities, and returns a spreadsheet-ready CSV in chat with a Slack-style preview and download. The user never runs Claude Code, Python, or vendor consoles.
-- **In Scope**: Intent/skill binding; identity extraction distinct from instruction prose; routing threshold of 4 unique identities; micro-query per-identity connector calls; batch CSV materialization into `asset_report_build` → `asset_report_mdm`; identical CSV schema on both routes; chat artifact card; canvas persistence of the same rows; partial-failure columns.
-- **Out of Scope**: `asset_report_app` / application-health lookup; Cortex XDR and Tenable on this skill; mutation/remediation; unconstrained Bash; CrewAI/Postgres/OIDC/admin vault.
+- **In Scope**: Intent/skill binding; identity extraction distinct from instruction prose; `asset_ops` host scripts for any pasted name list or CSV (`asset_report_build` → `asset_report_mdm`); `device_lookup` MCP only for one identifier; identical CSV schema for all list sizes; chat artifact card; partial-failure columns.
+- **Out of Scope**: `asset_report_app` / application-health lookup; Cortex XDR and Tenable on this skill; N× `device-lookup` for a name list; mutation/remediation (`jamf_group_sync`); unconstrained Bash; CrewAI/Postgres/OIDC/admin vault.
 
 ### 2. Traceability
 
-- **PRD Anchors**: FR-1 Request Intake; FR-2 Dual-Engine Routing (threshold 4); FR-3 Connector Collection skill-scoped to ServiceNow, Jamf, Intune; FR-7 registered `asset_report_build` and `asset_report_mdm`; FR-10 Chat Result Artifacts; MVP AC 1–3, 8.
+- **PRD Anchors**: FR-1 Request Intake; FR-2 Skill Bind (`device_lookup` vs `asset_ops`); FR-3 Connector Collection skill-scoped to ServiceNow, Jamf, Intune; FR-10 Chat Result Artifacts; MVP AC 1–5.
 - **User Story**: [us-lookup-user-devices.md](../user-stories/us-lookup-user-devices.md)
 - **SAD Anchors**: §2.2 Tool Capability Model; §2.3 Script Pipeline; §2.5 Task and Turn Orchestration; §2.8 Skill Pack and Workflow Model; §3.3 Chat artifacts; §4.4 `ResultArtifact`; §6.4 Example request walkthrough.
 
@@ -36,25 +36,26 @@ Identity values accepted after sanitization: usernames matching the existing pat
 The session host decides intent and route. The model does not invent connectors.
 
 1. Bind intent `device lookup` from phrasing or chip. Strip instruction stopwords. Sanitize identities.
-2. Route: 1–4 unique identities, no CSV → `micro_query`. 5+ or CSV → `batch_automation`.
-3. **≤4:** set MCP `allowed_tools` to ServiceNow user/device, Jamf lookup, Intune device lookup. Agent SDK calls them in parallel per name. Normalize to the common row shape.
-4. **>4:** host writes temp `username` CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py`. The model does not iterate the list. Unconstrained Bash is not allowed.
-5. Both paths write a session report file and emit **`chat.csv_preview`** (same renderer). Canvas is not required.
+2. Skill bind: **one** serial/hostname/user and no CSV → `device_lookup`. Pasted **name list** (any count, including 4) or CSV → `asset_ops`. Never run `device-lookup` once per name in a list.
+3. **`asset_ops`:** host writes temp username CSV and subprocesses `asset_report_build.py` then `asset_report_mdm.py` (passkey env). MCP is not used for steps 1–4. The model reads the stdout summary, never the CSV body. Unconstrained Bash is not allowed.
+4. **`device_lookup`:** set MCP `allowed_tools` from `docs/.claude/skills/device-lookup/SKILL.md`. Agent SDK calls the primary tool immediately for that one identifier. Conversational card, not a four-row CSV novel.
+5. `asset_ops` writes a session report file and emits **`chat.csv_preview`** (same renderer for 4 names and 50). Canvas is not required.
 
-Claude Code mapping (packaging time, not runtime):
+Claude Code mapping (runtime is the skill pack, not Postgres):
 
 | Claude Code path | Product object |
 | --- | --- |
-| `.claude/skills/asset-ops/SKILL.md` | `WorkflowDefinition` `lookup-user-devices` (triggers, description, required tools) |
-| `scripts/asset_report_build.py` | `ToolDefinition` `asset_report_build` |
-| `scripts/asset_report_mdm.py` | `ToolDefinition` `asset_report_mdm` |
+| `docs/.claude/skills/asset-ops/SKILL.md` | Name-list / CSV workflow `lookup-user-devices` |
+| `docs/.claude/skills/device-lookup/SKILL.md` | One-identifier lookup |
+| `scripts/asset_report_build.py` | Step 1 (passkey `servicenow`) |
+| `scripts/asset_report_mdm.py` | Step 2 (passkey `jamf_api` / `intune`) |
 | `scripts/asset_report_app.py` | Separate future workflow; not invoked by this skill |
 
 ### 5. Outputs
 
 - **`QueryRunSummary`**: Existing fields plus `skill_id` and `artifact_id` when present.
 - **SSE `chat.artifact`**: `artifact_id`, `filename`, `media_type`, `row_count`, `byte_size`, `preview_headers`, `preview_rows`, `truncated`, `download_path`, `correlation_id`.
-- **CSV file**: One row per device (or one explicit no-device/not-found row per identity). Minimum columns: `username`, `serial`, `hostname`, `model`, `manufacturer`, `platform`, `cmdb_state`, `mdm_provider`, `mdm_status`, `last_check_in`, `compliance`, `source_errors`, `retrieved_at`. Exact extra columns follow the adapters' typed evidence, not free-form LLM text.
+- **CSV file**: One row per device (or one explicit no-device/not-found row per identity). Columns match asset-ops step 1+2: `Username`, `Serial`, `Platform`, `State`, `Substate`, `Model`, `Asset Tag`, `Notes`, `MDM`, `MDM Status`, `MDM Last Check-In`, `MDM Detail`. Exact extra columns follow the scripts, not free-form LLM text.
 - **Chat UI**: Slack-style file card — file icon, filename (`devices-<run_short_id>.csv`), row count, header + preview table, "n more rows" if truncated, **Copy CSV**, **Copy for spreadsheet** (tab-separated), **Download**.
 - **Canvas rows**: Same joined evidence; export of the filtered canvas must match artifact columns for the current filter set.
 - **Partial run**: CSV still produced; `source_errors` and per-row MDM/CMDB status carry safe error categories.
@@ -62,8 +63,8 @@ Claude Code mapping (packaging time, not runtime):
 ### 6. Validations and Constraints
 
 - Routing uses unique sanitized identity count, not raw token count and not instruction-word count.
-- `MICRO_QUERY_MAX_SUBJECTS = 4`. Five identities always batch.
-- This skill may invoke only `asset_report_build` and `asset_report_mdm`. Cortex, Tenable, and `asset_report_app` are not in the skill’s tool set.
+- A name list of any size, including 4, is `asset_ops`. One identifier with no list is `device_lookup`.
+- The name-list skill may invoke only `asset_report_build` and `asset_report_mdm`. Cortex, Tenable, `asset_report_app`, and N× `device-lookup` are not in this skill’s tool set.
 - Tools must be registered, workspace-enabled, assigned to the executing worker role, and covered by a healthy-enough dependency policy (partial allowed).
 - Credentials never enter chat, CSV, preview, agent context, or logs.
 - Preview rows are capped; download is the full authorized artifact.
@@ -80,12 +81,12 @@ Claude Code mapping (packaging time, not runtime):
 | Invalid/empty after sanitization | `VALIDATION_ERROR` as today | No connector calls |
 | MCP or script source fails | Run `partial`; CSV includes error/not-found columns | Other identities continue |
 
-The report CSV is written by MCP normalization or by the host script runner, not by the model. Invalid model prose is ignored.
+The report CSV is written by the host script runner (`asset_ops`) or, for one id, derived from MCP payloads (`device_lookup`). Invalid model prose is ignored. The model must not dump the CSV body into context.
 
 ### 8. Acceptance Criteria
 
-1. "look up these users devices" plus 4 valid names → `micro_query`, `input_count=4`, instruction words not identities, SN/Jamf/Intune MCP only, `chat.csv_preview` in chat.
-2. Same prompt plus 5 valid names → host-invoked `asset_report_build` then `asset_report_mdm`; names absent from the model context.
+1. "look up these users devices" plus 4 valid names → `asset_ops`, `input_count=4`, instruction words not identities, host-invoked `asset_report_build` then `asset_report_mdm`, `chat.csv_preview` in chat. No `device-lookup` MCP.
+2. Same prompt plus 5 (or 50) valid names → the same `asset_ops` scripts; names and CSV body absent from the model context.
 3. CSV upload → script path; download is the device report, not the upload.
 4. Copy and Download work from the chat card.
 5. Preview at most 10 data rows; download has all rows.
@@ -96,13 +97,13 @@ The report CSV is written by MCP normalization or by the host script runner, not
 - [prd.md](../prd.md)
 - [sad.md](../sad.md)
 - [us-lookup-user-devices.md](../user-stories/us-lookup-user-devices.md)
-- SAD-reviewed scripts: `asset_report_build.py`, `asset_report_mdm.py` (requestor path `.claude/skills/asset-ops/scripts` was not available in this environment)
-- Requestor notes 2026-08-29: Claude Code skills for non-developers; 4-name vs CSV-script split; Slack-like CSV preview; automatic ServiceNow + Jamf + Intune lookup
+- Committed skill pack: `docs/.claude/skills/asset-ops/` and `docs/.claude/skills/device-lookup/` (`af27545`)
+- Requestor notes 2026-08-29: Claude Code skills for non-developers; Slack-like CSV preview; automatic ServiceNow + Jamf + Intune lookup
 
 ## Assumptions
 
-- `/Users/nick.sanchez/development-test2` was not readable here. The three report scripts already incorporated in SAD §2.2 are treated as the asset-ops skill scripts.
-- "Look them up individually" means per-identity Python connector calls, not an LLM calling a tool once per name.
+- Skill pack in-repo at `docs/.claude/skills/` is authoritative. Steps 1–4 use passkey scripts, not MCP (except optional step 1.5).
+- "Look them up individually" for four pasted names means one CSV row per device from `asset-ops`, not four `device-lookup` chat novels.
 - Spreadsheet paste is satisfied by TSV copy plus CSV download; Excel/Google Sheets deep links are not required for MVP.
 - Defaulting unmatched device-lookup prose to this skill is acceptable while it is the only enabled lookup workflow.
 
@@ -117,3 +118,4 @@ The report CSV is written by MCP normalization or by the host script runner, not
 
 - 2026-08-29 | `system-arch` | `create-sfs` | Specified lookup-user-devices.
 - 2026-08-29 | `system-arch` | `update-sfs` | Aligned with session-host MVP: MCP ≤4, host scripts >4, `chat.csv_preview`, runtime `claude-agent-sdk`.
+- 2026-08-29 | `system-arch` | `align-skill-pack` | Name lists (including 4) are `asset_ops` host scripts; MCP is `device_lookup` for one identifier. Columns match asset-ops step 1+2.
