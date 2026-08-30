@@ -195,62 +195,58 @@ Authoritative pack: `docs/.claude/skills/` (`origin/master` `af27545`).
 
 ## 3. Frontend Architecture Specification
 
+> **Revised 2026-08-30 (`backend-eng`, stopgap pending `system-arch` ratification — see Audit).** The version of this section below the fork line was never updated when `architecture-fork.md` dropped the enterprise workspace stack; it still specified workspaces, an administrator tool/credential/health console, an action-request confirm/execute lifecycle, and SSE/WebSocket run events. None of those exist in the session host's actual API (`project-context/2.build/backend.md`: `POST /api/v1/runs`, `GET /api/v1/runs/{id}`, `GET /api/v1/health`, `GET /api/v1/ready` — no workspace id, no tool/credential/action-request routes, no push transport). A frontend pass built directly from the pre-fork §3 (as happened 2026-08-27, see `frontend.md`) reproduces the enterprise UI `architecture-fork.md` §4/§6 says not to build. This revision aligns §3 to the same MVP boundary as §1.2/§1.3/§2: one private chat surface over the session host, nothing it can't actually call.
+
 ### 3.1 Technology Stack
 
 - React 18+ and TypeScript.
 - Vite for the frontend build and local development server.
 - Accessible, unopinionated component primitives with project-owned styling; no mandatory vendor UI dependency.
-- React Query or an equivalent server-state library for query-run, canvas, and action-request data; local component state for draft text and unsaved note text.
-- Native `EventSource` for run/chat SSE and a WebSocket client for workspace events.
-- CSV upload through `multipart/form-data` with client-side size/type hints, while the server remains authoritative.
+- React Query or an equivalent server-state library for run status; local component state for draft composer text.
+- **Bounded polling of `GET /api/v1/runs/{id}`, not SSE/WebSocket.** The session host has no push transport (`backend.md` Known Gaps); the client stops polling after a fixed timeout (frontend's first pass used 30s) and explains a still-`queued`/`running` run rather than spinning forever.
+- CSV upload through `multipart/form-data` (`file` field, 5 MiB server-enforced limit per `backend.md`) with matching client-side size/type hints; the server remains authoritative.
 
 ### 3.2 Application Structure
 
 ```text
 frontend/src/
-  app/                 # application shell, auth bootstrap, routing
-  features/chat/       # message list, composer, upload, cards, confirmations
-  features/canvas/     # filters, user/device tables, work-item detail
-  features/activity/   # run and audit-safe activity views
+  app/                 # application shell, routing (no auth bootstrap -- private bind is the only access control)
+  features/chat/       # message list, composer, upload, chat.csv_preview / chat.device_card cards
+  features/canvas/     # optional table view + filter/search over the active run's preview rows (client-derived, not a server entity)
   components/          # buttons, status, dialogs, live-region primitives
-  api/                 # typed HTTP, SSE, and WebSocket clients
-  types/               # API and domain contract types
+  api/                 # typed HTTP client for the 4 session-host routes
+  types/               # request/response types matching backend.md's run summary and result shapes exactly
 ```
 
-The MVP has one authenticated workspace route, for example `/workspaces/:workspaceId`, with deep-linkable run and work-item selections. Configuration screens are hidden unless the authenticated identity carries the designated administrator claim.
+**No workspace routing, no administrator claim, no role model.** The session host is a single private process (`127.0.0.1:<port>`, no CORS, no per-actor auth per `backend.md`'s Known Gaps) — there is exactly one implicit "workspace," so `/workspaces/:workspaceId` is dropped, not just hidden. Routes are `/` (chat with an optional canvas side panel) and `/canvas` (full-width canvas of the same client-derived rows). An optional `/health` view may call `GET /api/v1/health` and `GET /api/v1/ready` directly — this is a real diagnostic against real endpoints, not a role-gated admin console, so it needs no claim check.
 
-Administrator Settings adds workspace-scoped `/workspaces/:workspaceId/settings/tools`, `/settings/credentials`, and `/settings/health` views. Tool rows show name, purpose, integration, version, lifecycle, effective enabled state, assigned agents, parameter summary, and last validation result. Tool configuration uses generated controls from the typed schema; it provides inline validation, a proposed diff, explicit save confirmation for scope changes, and a visible configuration version. Credential forms support create/rotate/deactivate and alias/status metadata, but render secret inputs only for new values. Health rows show the diagnostic state, checked-at time, credential version, latency, and redacted remediation text. Settings data is fetched only after the server authorizes the Administrator claim; hiding a route in the client is not an authorization control.
+**Explicitly not built in this revision** (moved to Future Work, matching `architecture-fork.md` §4/§6's "do not build" list and `backend.md`'s own Known Gaps): Administrator Settings (`/settings/tools`, `/settings/credentials`) — no tool registry or credential store exists server-side to back them. Action Requests (create/confirm/execute) — the session host exposes no action-request route; both shipped skills (`device_lookup`, `asset_ops`) are read-only, and `architecture-fork.md` §5.5 only requires a confirm step once a write skill (e.g. `jamf_group_sync.py`) is actually exposed, which it is not. An Activity timeline backed by a server audit log — no such endpoint exists; a browser-session-only history (as the first frontend pass already did, disclosed as such) is acceptable if kept.
 
 ### 3.3 Interface Requirements
 
-The desktop layout uses two independently scrollable panels: chat on the left and canvas on the right. At narrower widths the panels become tabbed views without losing server state. The canvas remains useful when chat is not open.
+The desktop layout uses two independently scrollable panels: chat on the left and canvas on the right, canvas closed until a run produces rows. At narrower widths the panels become tabbed views. This matches the first frontend pass's already-correct instinct ("canvas is opt-in and never renders empty chrome") — that behavior is retained, just now pointed at the real backend.
 
 **Chat:**
 
-- Empty state lists enabled `WorkflowDefinition` chips. Selecting **Look up users' devices** sets composer intent and helper text ("Paste names or upload CSV; results come back as a spreadsheet in chat").
-- Text composer accepts natural-language requests and pasted usernames. The client preview uses the same instruction-stripping rules as the server; the server remains authoritative.
-- A plus menu contains CSV upload and permitted action shortcuts; connector configuration is administrator-only.
-- Messages show status, partial failures, and a first-class **`chat.csv_preview`** card (filename, row count, header + up to 10 rows, Copy, Download). Every `asset_ops` run uses this component. Single-id `device_lookup` uses a conversational card, not N CSV novels.
-- Artifact files live in a session-scoped reports directory; the card is not an LLM-authored second table.
-- Upload state shows validation, rejected-count summary, and server-created run ID without echoing sensitive raw content.
+- Text composer accepts natural-language requests, pasted username lists, and CSV upload via a plus menu. A live client-side preview of the host's skill-bind outcome (`device_lookup` vs `asset_ops`, accepted/ignored token count) mirrors `preprocessor.py`'s stopword/dedupe rules for user feedback only — the server (`POST /api/v1/runs`) remains authoritative and re-derives it from scratch.
+- Every run card shows `status` (`queued`/`running`/`partial`/`completed`/`failed`/`rejected` — `rejected` is the preprocessor's zero-identities/instruction-only outcome, distinct from a `failed` downstream script or MCP call), `mode`, `input_count`, `run id`/`correlation_id` (copyable for support), and `diagnostic`/`error.message` verbatim when present — Diagnostics are host-authored, user-safe strings (`backend.md`'s Diagnostic contract) and should render as-is, not be re-worded.
+- `asset_ops` runs render the returned `result` (`type: "chat.csv_preview"`) as a table card: `filename`, `headers`, up to 10 `preview_rows`, `row_count`, and a `truncated` indicator. **Open Question:** the session host has no file-download route today (only the capped in-memory preview is ever returned over HTTP) — a "Download full CSV" affordance cannot be wired to a real endpoint yet; either omit it, or `@integration.eng`/`@backend.eng` must add one before it ships (see Open Questions).
+- `device_lookup` runs render the returned `result` (`type: "chat.device_card"`) as a single conversational card (`identifier` + `summary` text) — never a CSV, never fanned out into N cards.
+- Upload state shows client-side validation (file type, 5 MiB cap) and, once accepted, the server-created run id — never echoes raw CSV content back into the transcript.
 
 **Canvas:**
 
-- Shared filters: run, owner, platform, connector state, finding category, compliance, assignee, and CMDB cleanup state.
-- User table and device/evidence drill-down show source, retrieval time, confidence, errors, assignment, notes, checked state, and cleanup state.
-- Action preview shows exact target count, operation, connector, rationale, expiration, and confirmation state.
-- CSV export uses the current filter state and displays generation time and data-source timestamps.
-- Activity stream shows safe state transitions and actor/time metadata, not secrets or raw responses.
+- Rows are derived from the active run's `preview_rows` (or, for `device_lookup`, there is no canvas row — it is chat-only). There is no server-side work-item entity, no cross-run history, and no connector/compliance/CMDB filter set — none of that data model exists in the session host. Client-side search/filter over the visible columns (`Username`, `Serial`, `Platform`, `State`, `MDM Status`, ...) is in scope; anything requiring server aggregation across runs is not.
+- CSV export of the *currently visible* (i.e. already-returned, possibly truncated) rows is in scope. Export of the full underlying report is blocked on the same missing download route noted above.
 
-**Loading, errors, and conflicts:**
+**Loading, errors, and stalled runs:**
 
-- Use skeleton/progress states for initial data and run updates.
-- Use status announcements for run progress, connector failures, and action results.
-- Render partial completion as usable results plus source-specific errors.
-- On HTTP 409 version conflicts, retain the local note draft and show the current server state with a resolve/retry action.
-- Disable confirmation and mutation controls while a request is stale, expired, unauthorized, or missing required evidence.
+- Use skeleton/progress states while a run is `queued`/`running`, polling `GET /api/v1/runs/{id}` on a bounded interval/timeout.
+- Render `partial` status as usable rows plus the `diagnostic` explaining what's missing (`backend.md` §"asset_ops": a failed MDM step still returns the step-1 rows) — this is a first-class result state, not an error toast.
+- Render `failed` status as the verbatim `error.message`/`diagnostic` with no retry-implies-different-outcome framing when the cause is a fixed operator gap (e.g. missing MCP config) — those need an operator action, not a client retry loop.
+- There are no HTTP 409 version conflicts, no confirmation/mutation controls, and no "stale/expired/unauthorized" request states to build for — those all belonged to the dropped Action Requests/Tool Config surfaces.
 
-Keyboard navigation, visible focus, semantic table headers, accessible labels, contrast-compliant status indicators, and a live region for progress are required for the core workflow.
+Keyboard navigation, visible focus, semantic table headers, accessible labels, contrast-compliant status indicators, and a live region for run-status announcements are required for the core workflow.
 
 ## 4. Backend Architecture Specification
 
@@ -693,6 +689,8 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - [AAMAD agent framework overview](../../AGENTS.md).
 - Reviewed capability sources: `docs/.claude/skills/asset-ops/` and `docs/.claude/skills/device-lookup/` on `origin/master` `af27545`. Earlier SAD review also used archived copies of `asset_report_build.py`, `asset_report_mdm.py`, and `asset_report_app.py`.
 - [architecture-fork.md](architecture-fork.md) §7 skill-pack review.
+- [project-context/2.build/backend.md](../2.build/backend.md) — authoritative, live-tested session-host API contract used to revise §3 (2026-08-30).
+- [project-context/2.build/frontend.md](../2.build/frontend.md) — first frontend pass (2026-08-27), built against the pre-fork §3; superseded by the §3 revision but its design-system/accessibility work is salvageable per its own Known Gaps table.
 
 ## Assumptions
 
@@ -703,6 +701,8 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - A pasted name list is `asset-ops`, not N parallel `device-lookup` MCP calls. "Look them up individually" for four names means one row per device in the CSV, not four chat novels.
 - Vendor API permissions and exact field mappings are finalized during the Build integration phase.
 - A single workspace can contain multiple authenticated collaborators, while the MVP remains single-tenant per deployment.
+- **[2026-08-30]** §3 no longer assumes a workspace/administrator/action-request model exists to build a frontend against — `backend.md`'s live-tested API is authoritative for what the client can call, superseding the single-workspace/collaborator assumption above for the MVP frontend (that assumption describes Future Work multi-tenancy, not what ships now).
+- **[2026-08-30]** The §3 revision below is a `backend-eng` stopgap, written because the operator asked directly whether frontend work was ready to proceed and the mismatch was blocking; it is scoped to what `backend.md` proves the API actually does, not a new product decision. It should be read as provisional until `@system.arch` ratifies or amends it.
 
 ## Open Questions
 
@@ -717,6 +717,9 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 9. What CSV columns must the pilot spreadsheet include beyond `chat.csv_preview` headers?
 10. Session file retention and multi-user isolation on a shared host.
 11. Does app-health / vuln intent ship in the same MVP or only device lookup?
+12. **[2026-08-30]** `@system.arch` should ratify or amend the §3 revision below — it was drafted by `@backend.eng` from `backend.md`'s live-tested contract, not authored or reviewed by the architecture persona.
+13. **[2026-08-30]** The session host has no HTTP route to download/export the *full* underlying report CSV — only the 10-row `preview_rows` ever leaves the process over HTTP (`backend.md`'s `chat.csv_preview` contract). §3's Chat/Canvas sections flag this as blocking a "Download full CSV" affordance. Should `@backend.eng`/`@integration.eng` add a `GET /api/v1/runs/{id}/report` (or similar) route, or is the 10-row preview the intended MVP ceiling with no full-file access from the browser at all?
+14. **[2026-08-30]** Should `/health` (hitting `GET /api/v1/health`/`/ready` directly) exist at all in the MVP frontend, or is it out of scope for a non-developer chat window and better left to operator `curl`/ops tooling?
 
 ## Audit
 
@@ -724,3 +727,4 @@ Prioritize based on observed evidence: source precedence and freshness policy, c
 - 2026-08-27 | `system-arch` | `update-sad` | Incorporated updated PRD administrator requirements and reviewed the three report scripts; defined governed capability adapters, pipeline execution, configuration/credential APIs, health diagnostics, RBAC enforcement, and versioned run snapshots.
 - 2026-08-29 | `system-arch` | `update-sad` | Adopted session-host MVP (`claude-agent-sdk` + MCP + asset-ops scripts). CrewAI/Postgres/Redis/OIDC/admin vault marked Future Work. Intent table, host-invoked batch scripts, `chat.csv_preview`. See architecture-fork.md. Prompt Trace omitted: specification, not a runtime model invocation.
 - 2026-08-29 | `system-arch` | `align-skill-pack` | After `docs/` landed at `af27545`: name lists and CSV always host-invoke `asset-ops` steps 1–2; MCP is `device-lookup` for one identifier; step 1.5 is optional SN-gap fill. Threshold 4 is not the default dual engine for the example request.
+- 2026-08-30 | `backend-eng` | `revise-sad-section-3` (stopgap, not a normal `@backend.eng` action — see Open Question #12) | Found §3 "Frontend Architecture Specification" still specified the pre-fork enterprise UI (workspaces, admin tool/credential/health console, action-request lifecycle, SSE/WebSocket) — `architecture-fork.md`'s 2026-08-29 revision list never included §3, so it was missed. The 2026-08-27 frontend pass (`frontend.md`, `frontend/`) built exactly that spec and is consequently wired to the wrong backend (`http://127.0.0.1:8000`, `/workspaces/{id}/...`) instead of the real session host (`127.0.0.1:8100`, `/api/v1/runs`). Rewrote §3 to the session-host's live-tested API contract (`backend.md`): dropped workspace routing, administrator claim/role model, Tool/Credential settings, and Action Requests entirely (no backing endpoints exist and none are planned this MVP); replaced SSE/WebSocket with `backend.md`'s actual bounded-polling behavior; kept the chat + optional-canvas layout and accessibility requirements, which do not depend on the dropped surfaces. Flagged the missing full-CSV-download route and the `/health` screen's scope as new Open Questions (#13–14) rather than inventing a route or silently deciding. Did not touch §1, §2, or §4–10. Prompt Trace omitted: document revision from an existing artifact (`backend.md`) plus direct operator instruction, not a model-authored architectural decision.

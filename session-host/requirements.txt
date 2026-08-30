@@ -5,3 +5,6 @@ claude-agent-sdk==0.2.148
 pandas==2.3.3
 pyyaml==6.0.3
 requests==2.34.2
+starlette==1.6.0
+uvicorn==0.52.4
+python-multipart==0.0.32
