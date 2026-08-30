@@ -17,8 +17,8 @@ libraries:
 
 ui:
   theme: system
-  visual_style: minimal
-  prefer_modals: false
+  visual_style: "modern-minimal-saas: clean, generous whitespace, subtle borders/elevation over heavy chrome, restrained color with one cohesive accent (Linear/Notion-like); no fixed brand palette supplied -- frontend engineer's discretion within this direction"
+  prefer_modals: false  # prefer inline/side panels over modal dialogs; spacious layout, not dense
 
 coding_standards:
   style_guide: ""
