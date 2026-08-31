@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-/** State backed by localStorage, resilient to unavailable storage (private mode). */
-export function usePersistentState<T>(key: string, initial: T) {
+function useStorageState<T>(storage: Storage, key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
     try {
-      const raw = window.localStorage.getItem(key);
+      const raw = storage.getItem(key);
       return raw === null ? initial : (JSON.parse(raw) as T);
     } catch {
       return initial;
@@ -13,13 +12,27 @@ export function usePersistentState<T>(key: string, initial: T) {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(key, JSON.stringify(value));
+      storage.setItem(key, JSON.stringify(value));
     } catch {
       /* storage unavailable — keep in-memory only */
     }
   }, [key, value]);
 
   return [value, setValue] as const;
+}
+
+/** UI preference backed by localStorage (persists across browser restarts),
+ * resilient to unavailable storage (private mode). Use for durable
+ * preferences like theme — never for chat/run history (see `useSessionState`). */
+export function usePersistentState<T>(key: string, initial: T) {
+  return useStorageState(window.localStorage, key, initial);
+}
+
+/** Thread/canvas history backed by sessionStorage, so it survives a reload
+ * within the tab but is gone once the tab closes — matching the disclosed
+ * "browser-session-only history" contract (no server audit log exists). */
+export function useSessionState<T>(key: string, initial: T) {
+  return useStorageState(window.sessionStorage, key, initial);
 }
 
 type Combo = { key: string; meta?: boolean; shift?: boolean };

@@ -53,6 +53,7 @@ class Settings:
     session_reports_dir: Path
     mcp_transport: str
     mcp_servers_config: Path
+    claude_config_path: Path
     anthropic_base_url: str
     anthropic_api_key: str
     litellm_model: str
@@ -73,6 +74,14 @@ class Settings:
             mcp_servers_config=(
                 REPO_ROOT / _env("MCP_SERVERS_CONFIG", "session-host/config/mcp.stdio.json")
             ).resolve(),
+            # Product pivot 2026-08-31: "attach all my skills and MCP tools already" --
+            # the operator's own Claude Code config already has every server registered
+            # with real credentials, so chat.py reads it directly instead of requiring a
+            # hand-copied, 3-server mcp.stdio.json. Overridable per-machine so a teammate
+            # running their own session-host points at their own config.
+            claude_config_path=Path(
+                _env("CLAUDE_CONFIG_PATH", str(Path.home() / ".claude.json"))
+            ).expanduser().resolve(),
             anthropic_base_url=_env("ANTHROPIC_BASE_URL"),
             anthropic_api_key=_env("ANTHROPIC_API_KEY"),
             litellm_model=_env("LITELLM_MODEL"),
@@ -92,6 +101,11 @@ class Settings:
         problems: list[str] = []
         if not self.asset_ops_scripts_dir.is_dir():
             problems.append(f"ASSET_OPS_SCRIPTS_DIR not found: {self.asset_ops_scripts_dir}")
+        if not self.claude_config_path.is_file():
+            problems.append(
+                f"CLAUDE_CONFIG_PATH not found: {self.claude_config_path} (chat has no MCP servers "
+                "to attach without it)"
+            )
         if self.mcp_transport != "stdio":
             problems.append(
                 f"MCP_TRANSPORT={self.mcp_transport!r} is not supported; only 'stdio' is implemented."

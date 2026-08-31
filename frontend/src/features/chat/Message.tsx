@@ -1,16 +1,17 @@
 import { useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Icon, type IconName } from '../../components/Icon.tsx';
+import { useToast } from '../../components/Toast.tsx';
+import { useRunPolling } from '../../hooks/useRunPolling.ts';
 import type { RunStatus, RunSummary } from '../../types/api.ts';
-import type { ThreadEntry } from '../../app/SessionContext.tsx';
-import { useRunStatus } from '../../hooks/useRunStatus.ts';
-import { MODE_LABEL } from './parseInput.ts';
+import type { ChatEntry } from '../../app/AppState.tsx';
 import './Message.css';
 
 const STATUS_META: Record<RunStatus, { label: string; tone: string; icon: IconName }> = {
   queued: { label: 'Queued', tone: 'info', icon: 'clock' },
   running: { label: 'Running', tone: 'accent', icon: 'spinner' },
   completed: { label: 'Completed', tone: 'success', icon: 'checkCircle' },
-  partial: { label: 'Partial', tone: 'warning', icon: 'alert' },
   failed: { label: 'Failed', tone: 'danger', icon: 'alert' },
 };
 
@@ -18,19 +19,18 @@ function timeOf(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export function UserMessage({ entry }: { entry: ThreadEntry }) {
+export function UserMessage({ entry }: { entry: ChatEntry }) {
   const { prompt } = entry;
   return (
     <div className="msg msg--user">
       <div className="msg__bubble">
-        {prompt.kind === 'csv' ? (
+        {prompt.fileName && (
           <span className="msg__file">
             <Icon name="file" size={15} />
             <span className="truncate">{prompt.fileName}</span>
           </span>
-        ) : (
-          <p className="msg__text">{prompt.text}</p>
         )}
+        {prompt.text && <p className="msg__text">{prompt.text}</p>}
       </div>
       <span className="msg__time">{timeOf(entry.createdAt)}</span>
     </div>
@@ -38,52 +38,36 @@ export function UserMessage({ entry }: { entry: ThreadEntry }) {
 }
 
 interface RunMessageProps {
-  entry: ThreadEntry;
-  workspaceId: string;
-  onOpenCanvas: () => void;
-  onStatusChange: (run: RunSummary) => void;
+  entry: ChatEntry;
+  onRunUpdate: (run: RunSummary) => void;
 }
 
-export function RunMessage({ entry, workspaceId, onOpenCanvas, onStatusChange }: RunMessageProps) {
-  const { run, polling, stalled, refresh } = useRunStatus({ workspaceId, run: entry.run });
+export function RunMessage({ entry, onRunUpdate }: RunMessageProps) {
+  const { run, polling, stalled, gaveUp, refresh } = useRunPolling(entry.run);
+  const toast = useToast();
 
-  const observedStatus = run?.status;
-  const knownStatus = entry.run?.status;
+  const observedUpdatedAt = run?.updated_at;
+  const knownUpdatedAt = entry.run?.updated_at;
   useEffect(() => {
-    if (run && observedStatus !== knownStatus) onStatusChange(run);
+    if (run && observedUpdatedAt !== knownUpdatedAt) onRunUpdate(run);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [observedStatus, knownStatus]);
+  }, [observedUpdatedAt, knownUpdatedAt]);
 
-  if (entry.error) {
-    return (
-      <div className="msg msg--agent">
-        <AgentAvatar tone="danger" />
-        <div className="msg__card msg__card--danger">
-          <div className="msg__card-head">
-            <Icon name="alert" size={15} />
-            <span className="msg__card-title">Request rejected</span>
-          </div>
-          <p className="msg__error">{entry.error}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!run) {
-    return (
-      <div className="msg msg--agent">
-        <AgentAvatar tone="accent" />
-        <div className="msg__card">
-          <div className="msg__skeleton">
-            <span className="skeleton" style={{ width: '38%', height: 12 }} />
-            <span className="skeleton" style={{ width: '62%', height: 12 }} />
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!run) return null;
 
   const meta = STATUS_META[run.status];
+  // `?? []` guards a run object persisted to sessionStorage before `activity` existed on the
+  // contract (this field shipped after threadId did) -- an old tab's stale entry must not crash
+  // the whole message on the next poll.
+  const activity = run.activity ?? [];
+  const recentActivity = activity.length > 0 ? activity.slice(-5) : ['Connecting to the session...'];
+  const activityOffset = activity.length - recentActivity.length;
+
+  const copyText = () => {
+    if (run.result?.type !== 'chat.text') return;
+    void navigator.clipboard?.writeText(run.result.text);
+    toast.success('Copied', 'Response copied to clipboard.');
+  };
 
   return (
     <div className="msg msg--agent">
@@ -94,69 +78,77 @@ export function RunMessage({ entry, workspaceId, onOpenCanvas, onStatusChange }:
             <Icon name={polling ? 'spinner' : meta.icon} size={12} />
             {meta.label}
           </span>
-          <span className="badge badge--outline">{MODE_LABEL[run.mode]}</span>
           <span className="msg__card-time">{timeOf(run.created_at)}</span>
         </div>
 
-        <p className="msg__summary">
-          Accepted <strong>{run.input_count}</strong>{' '}
-          {run.input_count === 1 ? 'identifier' : 'identifiers'}
-          {run.rejected_count > 0 && (
-            <>
-              {' '}
-              and rejected <strong>{run.rejected_count}</strong> malformed{' '}
-              {run.rejected_count === 1 ? 'token' : 'tokens'}
-            </>
-          )}
-          .{' '}
-          {run.mode === 'batch_automation'
-            ? 'Routed to the deterministic batch pipeline.'
-            : 'Routed to the low-latency micro-query path.'}
-        </p>
-
         {polling && (
-          <div className="msg__progress" role="status" aria-live="polite">
-            <span className="msg__progress-bar" />
-            <span className="msg__progress-label">Waiting for connector results…</span>
+          <div className="msg__activity" role="status" aria-live="polite">
+            {recentActivity.map((line, i) => {
+              const isCurrent = i === recentActivity.length - 1;
+              return (
+                <div key={activityOffset + i} className={`msg__activity-line${isCurrent ? ' is-current' : ''}`}>
+                  <Icon name={isCurrent ? 'spinner' : 'checkCircle'} size={13} />
+                  <span>{line}</span>
+                </div>
+              );
+            })}
           </div>
         )}
 
         {stalled && (
-          <div className="notice notice--warning msg__notice">
+          <div className="notice notice--info msg__notice" role="status">
             <Icon name="info" size={15} className="notice__icon" />
             <div>
-              <p className="notice__title">Run accepted, results pending</p>
+              <p className="notice__title">Taking longer than usual</p>
               <p className="notice__body">
-                The MVP backend persists and routes the run but has no connector worker yet, so the
-                status stays <code>queued</code>. Evidence tables appear here once the orchestration
-                service is wired up.
+                A general chat turn can call several tools in sequence, which can take under a
+                minute. This will update on its own when it finishes; no need to click anything.
               </p>
             </div>
           </div>
         )}
 
-        <dl className="msg__facts">
-          <div>
-            <dt>Run</dt>
-            <dd className="mono">{run.id.slice(0, 8)}</dd>
+        {gaveUp && (
+          <div className="notice notice--warning msg__notice" role="status">
+            <Icon name="info" size={15} className="notice__icon" />
+            <div>
+              <p className="notice__title">Still {run.status} after 2 minutes</p>
+              <p className="notice__body">
+                The session host has no push transport, so this client stopped polling rather
+                than spinning forever. The run may still be working in the background — check
+                again below.
+              </p>
+            </div>
           </div>
-          <div>
-            <dt>Correlation</dt>
-            <dd className="mono">{run.correlation_id.slice(0, 8)}</dd>
+        )}
+
+        {run.status === 'failed' && (
+          <div className="notice notice--danger msg__notice" role="alert">
+            <Icon name="alert" size={15} className="notice__icon" />
+            <div>
+              <p className="notice__title">Failed</p>
+              <p className="notice__body">
+                {run.diagnostic ?? run.error?.message ?? 'No further detail was returned.'}
+              </p>
+            </div>
           </div>
-          <div>
-            <dt>Source</dt>
-            <dd>{run.input_kind}</dd>
+        )}
+
+        {run.status === 'completed' && run.result?.type === 'chat.text' && (
+          <div className="msg__result markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.result.text}</ReactMarkdown>
           </div>
-        </dl>
+        )}
 
         <div className="msg__actions">
-          <button type="button" className="btn btn--secondary btn--sm" onClick={onOpenCanvas}>
-            <Icon name="canvas" size={14} /> View on canvas
-          </button>
           <button type="button" className="btn btn--ghost btn--sm" onClick={refresh}>
-            <Icon name="refresh" size={14} /> Refresh
+            <Icon name="refresh" size={14} /> Check again
           </button>
+          {run.status === 'completed' && run.result?.type === 'chat.text' && (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={copyText}>
+              <Icon name="copy" size={14} /> Copy
+            </button>
+          )}
           <button
             type="button"
             className="btn btn--ghost btn--sm"

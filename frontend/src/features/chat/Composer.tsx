@@ -2,26 +2,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '../../components/Icon.tsx';
 import { Menu, MenuItem, MenuLabel } from '../../components/Menu.tsx';
 import { useToast } from '../../components/Toast.tsx';
-import { CSV_ACCEPT, MODE_LABEL, parseInput, validateCsv } from './parseInput.ts';
+import { CSV_ACCEPT, validateCsv } from './parseInput.ts';
 import './Composer.css';
+
+export interface ComposerSubmission {
+  text: string;
+  file?: File;
+}
 
 interface ComposerProps {
   busy: boolean;
-  onSubmitText: (text: string, kind: 'typed' | 'pasted', usernames: string[]) => void;
-  onSubmitCsv: (file: File) => void;
+  onSubmit: (submission: ComposerSubmission) => void;
   /** Increment `nonce` to load `value` into the composer from outside. */
   seed?: { value: string; nonce: number };
 }
 
-export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProps) {
+export function Composer({ busy, onSubmit, seed }: ComposerProps) {
   const [text, setText] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
-  const parsed = parseInput(text);
-  const canSubmit = !busy && parsed.accepted.length > 0;
+  const canSubmit = !busy && (text.trim().length > 0 || file !== null);
 
   const seedNonce = seed?.nonce ?? 0;
   const seedValue = seed?.value ?? '';
@@ -41,20 +45,21 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
 
   const submit = useCallback(() => {
     if (!canSubmit) return;
-    onSubmitText(text.trim(), parsed.kind, parsed.accepted);
+    onSubmit({ text: text.trim(), file: file ?? undefined });
     setText('');
-  }, [canSubmit, onSubmitText, parsed.accepted, parsed.kind, text]);
+    setFile(null);
+  }, [canSubmit, onSubmit, text, file]);
 
-  const handleFile = useCallback(
-    (file: File) => {
-      const problem = validateCsv(file);
+  const stageFile = useCallback(
+    (candidate: File) => {
+      const problem = validateCsv(candidate);
       if (problem) {
         toast.error('CSV rejected', problem);
         return;
       }
-      onSubmitCsv(file);
+      setFile(candidate);
     },
-    [onSubmitCsv, toast],
+    [toast],
   );
 
   return (
@@ -69,17 +74,33 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
         onDrop={(event) => {
           event.preventDefault();
           setDragging(false);
-          const file = event.dataTransfer.files?.[0];
-          if (file) handleFile(file);
+          const dropped = event.dataTransfer.files?.[0];
+          if (dropped) stageFile(dropped);
         }}
       >
+        {file && (
+          <div className="composer__staged">
+            <Icon name="file" size={14} />
+            <span className="truncate">{file.name}</span>
+            <button
+              type="button"
+              className="btn btn--ghost btn--icon composer__staged-remove"
+              onClick={() => setFile(null)}
+              aria-label="Remove attachment"
+              disabled={busy}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        )}
+
         <textarea
           ref={textareaRef}
           className="composer__input"
           value={text}
           rows={1}
           disabled={busy}
-          placeholder="Paste usernames or ask about a user, device, or compliance gap…"
+          placeholder="Ask anything — a device lookup, a batch report, a ticket search…"
           aria-label="Message Fleet Recon"
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
@@ -93,7 +114,7 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
         <div className="composer__bar">
           <Menu
             side="top"
-            label="Attachments and actions"
+            label="Attachments"
             trigger={({ toggle, open }) => (
               <button
                 type="button"
@@ -119,13 +140,6 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
                 >
                   Upload CSV…
                 </MenuItem>
-                <MenuLabel>Integration actions</MenuLabel>
-                <MenuItem icon={<Icon name="lock" size={15} />} disabled hint="Select canvas rows">
-                  ServiceNow ticket
-                </MenuItem>
-                <MenuItem icon={<Icon name="lock" size={15} />} disabled hint="Select canvas rows">
-                  Jamf policy
-                </MenuItem>
               </>
             )}
           </Menu>
@@ -136,19 +150,15 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
             accept={CSV_ACCEPT}
             className="sr-only"
             onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) handleFile(file);
+              const picked = event.target.files?.[0];
+              if (picked) stageFile(picked);
               event.target.value = '';
             }}
           />
 
-          <ComposerFeedback
-            count={parsed.accepted.length}
-            rejected={parsed.rejected.length}
-            mode={parsed.mode}
-            prose={parsed.looksLikeProse}
-            empty={text.trim().length === 0}
-          />
+          <p className="composer__feedback composer__feedback--muted">
+            {file ? 'CSV attached — add a note or just send.' : 'Type a message, or attach a CSV.'}
+          </p>
 
           <button
             type="button"
@@ -165,60 +175,14 @@ export function Composer({ busy, onSubmitText, onSubmitCsv, seed }: ComposerProp
         {dragging && (
           <div className="composer__dropzone">
             <Icon name="upload" size={18} />
-            <span>Drop a CSV with a <code>username</code> column</span>
+            <span>Drop a CSV (username column, under 5 MiB)</span>
           </div>
         )}
       </div>
 
       <p className="composer__legal">
-        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line · usernames are
-        de-duplicated and validated server-side.
+        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
       </p>
     </div>
-  );
-}
-
-function ComposerFeedback({
-  count,
-  rejected,
-  mode,
-  prose,
-  empty,
-}: {
-  count: number;
-  rejected: number;
-  mode: 'micro_query' | 'batch_automation';
-  prose: boolean;
-  empty: boolean;
-}) {
-  if (empty) {
-    return (
-      <p className="composer__feedback composer__feedback--muted">
-        Detected identifiers appear here as you type.
-      </p>
-    );
-  }
-
-  if (count === 0) {
-    return (
-      <p className="composer__feedback composer__feedback--warn">
-        <Icon name="alert" size={13} /> No valid usernames detected yet.
-      </p>
-    );
-  }
-
-  return (
-    <p className="composer__feedback" aria-live="polite">
-      <span className="badge badge--accent">
-        {count} {count === 1 ? 'username' : 'usernames'}
-      </span>
-      <span className="badge badge--outline">{MODE_LABEL[mode]}</span>
-      {rejected > 0 && (
-        <span className="badge badge--warning" title="These tokens fail the server username pattern">
-          {rejected} ignored
-        </span>
-      )}
-      {prose && <span className="composer__feedback-note">Free-text intent is preserved.</span>}
-    </p>
   );
 }

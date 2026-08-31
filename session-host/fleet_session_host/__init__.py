@@ -1,5 +1,7 @@
-"""Fleet Recon session host: preprocessor + host script runner + Claude Agent
-SDK session, wrapping passkey-invoked asset-ops scripts and local stdio MCP.
+"""Fleet Recon session host: a general-purpose chat session (Claude Agent
+SDK) with every MCP server from the operator's own Claude Code config
+attached, plus one custom tool wrapping this repo's deterministic
+asset-report pipeline.
 
 See project-context/2.build/backend.md for the full contract.
 """
