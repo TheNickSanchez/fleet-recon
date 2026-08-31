@@ -23,6 +23,27 @@
   border-style: dashed;
 }
 
+.composer__staged {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: fit-content;
+  max-width: calc(100% - var(--s-8));
+  margin: var(--s-3) var(--s-4) 0;
+  padding: var(--s-1) var(--s-1) var(--s-1) var(--s-3);
+  border-radius: var(--r-full);
+  background: var(--bg-inset);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--fg-secondary);
+}
+.composer__staged-remove {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--r-full);
+}
+
 .composer__input {
   display: block;
   width: 100%;
@@ -45,7 +66,7 @@
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-2);
+  padding: var(--s-2);
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -80,12 +101,6 @@
 .composer__feedback--warn {
   color: var(--warning);
 }
-.composer__feedback-note {
-  color: var(--fg-quaternary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .composer__dropzone {
   position: absolute;
@@ -100,11 +115,6 @@
   font-size: var(--text-sm);
   font-weight: 500;
   pointer-events: none;
-}
-.composer__dropzone code {
-  background: var(--accent-soft);
-  padding: 1px 4px;
-  border-radius: var(--r-xs);
 }
 
 .composer__legal {

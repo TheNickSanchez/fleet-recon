@@ -27,6 +27,7 @@ def settings_factory(tmp_path: Path):
             session_reports_dir=reports_dir,
             mcp_transport="stdio",
             mcp_servers_config=tmp_path / "mcp.stdio.json",
+            claude_config_path=tmp_path / "claude.json",
             anthropic_base_url="",
             anthropic_api_key="",
             litellm_model="",

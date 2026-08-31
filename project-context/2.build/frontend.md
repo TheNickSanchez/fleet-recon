@@ -1,232 +1,216 @@
-# Fleet Recon Frontend Implementation
+# Fleet Recon Frontend Implementation — General Chat Pivot
 
-## Scope
+**Product pivot, 2026-08-31 — this document supersedes the session-host-rebuild record below it (2026-08-30), which itself superseded the original enterprise-scaffold record.** The backend dropped its two-mode router (`device_lookup`/`asset_ops`, chosen by a client-side identity-count preview) for a single general chat turn per message — see `backend.md`'s 2026-08-31 entry for the full backend-side reasoning. This pass follows that contract change: the composer no longer gates on "did we detect an identity," result rendering is a single markdown chat bubble instead of two specialized card types, and there is a `thread_id` for real multi-turn conversation instead of a purely client-local "thread."
 
-React 19 + TypeScript + Vite frontend for the Fleet Recon MVP, implementing SAD §3 (Frontend Architecture Specification).
+React 19 + TypeScript + Vite, same stack as the superseded pass.
 
-This document supersedes the first-pass implementation. That pass was functional but visually and interactionally weak: a `+` menu that offered "Paste Usernames" as a discrete mode, a permanently mounted canvas panel that consumed a third of the viewport while empty, no navigation model, and inline error blocks. The interface was rebuilt around an explicit design system, a collapsible navigation rail, and intent-detecting input.
+## What Changed vs. the 2026-08-30 Rebuild
+
+| Area | Disposition |
+| --- | --- |
+| `types/api.ts`, `api/client.ts` | **Rewritten.** `RunMode`/`skill_id`/`intent_id`/`input_count` are gone — a `RunSummary` now carries `thread_id` instead. `RunResult` is just `{type: "chat.text", text}`; `CsvPreviewResult`/`DeviceCardResult` and their type guards are gone. `api.createRun({text, file, threadId})` replaces the separate `createRunFromText`/`createRunFromFile` — a single call now supports text, a file, or both together (the backend's `_build_prompt` combines them into one prompt). |
+| `features/chat/parseInput.ts` | **Gutted.** No more identity extraction / mode-bind preview (that logic moved server-side into the now-deleted `preprocessor.py`, and doesn't exist anywhere anymore — every message is submittable). Kept only the CSV upload guardrails (`validateCsv`, 5 MiB cap, `.csv` extension). |
+| `features/chat/Composer.tsx` | **Rewritten.** Submit is gated on "there's text or a file," not "we detected ≥1 identity." A CSV attach is now **staged** (a removable chip above the input) instead of firing an immediate separate submission — you can attach a file, add a note, and send both together in one turn, matching the backend's combined-prompt support. |
+| `features/chat/Message.tsx`, `ResultCards.tsx` | **Merged and simplified.** `ResultCards.tsx` (the `chat.csv_preview` table card and `chat.device_card` conversational card) is deleted; every completed run now renders as one markdown block (`react-markdown`, reused from the prior pass's device-card fix) directly inside `Message.tsx`. Status badges dropped the per-mode label (`MODE_LABEL`) and the `partial` status/tone — there is no more "partial" run status. |
+| `features/canvas/*` | **Deleted outright** (`CanvasPage.tsx`, `CanvasPanel.tsx`, `CanvasView.tsx`/`.css`), along with `components/ReportDownloadButton.tsx` and `lib/csv.ts`. All three existed specifically to visualize/export the structured `chat.csv_preview` payload, which no longer exists as a distinct result type — the asset-report tool's output is now narrated by the model as part of its normal chat.text response (often still as a markdown table, just not a separate structured card/canvas). This is a real feature removal, not a rename; see Open Questions if a dedicated data-table view is wanted back. |
+| `app/AppState.tsx` | **Simplified.** Dropped the `canvas`/`registerRunResult`/`clearCanvas`/`canvasOpen` slot entirely (no more data source for it). Added `threadId` (a `sessionStorage`-backed uuid, regenerated on "New chat") so every message in a browser session threads into the same backend conversation (`RunStore.get_thread_history`) until explicitly cleared. |
+| `app/App.tsx`, `app/TopBar.tsx`, `main.tsx` | **Simplified.** No more `/canvas` route or narrow-viewport tab switcher — there is exactly one screen now. `react-router-dom` was removed as a dependency entirely (nothing in the app routes anymore). |
+| `features/chat/Message.tsx`, `Message.css` | **[New, same day] Live activity feed + table rendering fix.** Two live-demo bugs from the first pivot pass: (1) markdown tables rendered as raw `\|`-delimited text — `react-markdown@10` needs `remark-gfm` for GFM tables/strikethrough/task-lists and it wasn't wired up; fixed by adding the `remark-gfm` dependency and passing `remarkPlugins={[remarkGfm]}`. (2) the static "Thinking, and calling whichever tools it needs..." summary + indeterminate progress bar read as broken during a real ~30s multi-tool turn ("it's static while looking up... with claude, at least you can see it thinking" — operator). Replaced with a live feed rendering the new `RunSummary.activity` lines (last 5, newest highlighted) — see `backend.md`'s "Live Activity Feed" for what populates it. |
 
 ## Interaction Design Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| **Input kind is inferred, never selected.** | Pasting is a gesture, not a mode. `parseInput()` mirrors the server sanitizer and classifies `typed` vs `pasted` from separators and token count, so the user just types or pastes and presses Enter. |
-| **The `+` menu holds only real affordances.** | It now contains CSV upload plus the two allowlisted integration actions (disabled with a reason until canvas rows are selected). Nothing in it duplicates what typing already does. |
-| **Canvas is opt-in and never renders empty chrome.** | The side panel is closed by default, opens automatically when a run produces rows, and is toggleable with `⌘\`. When it has no rows it explains what puts rows there instead of showing an empty frame. |
-| **Collapsible navigation rail.** | Persistent left navigation collapses to a 60 px icon rail (`⌘B`, persisted). Administration section only renders for the administrator claim. Below 900 px it becomes an overlay drawer. |
-| **Live parse feedback in the composer.** | Detected username count, routing mode (`Micro-query` / `Batch automation`), and ignored-token count update as the user types, so routing behaviour is visible *before* submission. |
-| **Errors surface as toasts, not inline blocks.** | Transient failures use a toast queue. Persistent conditions (authorization denial, backend gap) render as in-place notices with a stated remedy. |
-| **Honest empty and stalled states.** | The backend has no orchestration worker, so runs remain `queued`. Rather than spinning forever, polling stops after 30 s and the run card explains exactly why results are pending. |
-| **Command palette (`⌘K`).** | Single entry point for navigation, canvas/sidebar toggles, theme, and role switching. |
-| **Light and dark themes.** | System-following by default, overridable, persisted. All colour decisions come from tokens, so both themes stay in sync. |
-
-## Design System
-
-`src/styles/tokens.css` is the single source of truth for colour, type scale, spacing (4 pt), radii, elevation, motion, and z-index. `src/styles/base.css` provides the reset plus shared primitives (`btn`, `input`, `select`, `switch`, `card`, `badge`, `table`, `empty`, `skeleton`, `kbd`).
-
-Both themes are defined as token overrides on `[data-theme]`, so no component stylesheet contains a literal colour. Feature stylesheets are colocated with their components and consume tokens only.
-
-> **Note:** `src/main.tsx` imports `tokens.css` and `base.css` *before* any feature module. CSS ordering matters here — Vite emits stylesheets in import-evaluation order, and base primitives share single-class specificity with component rules, so importing them last silently overrode component styling.
+| **Anything is submittable.** | The old "one surviving identity → lookup, two+ → batch, zero → nothing to submit" preview is gone — the backend has no concept of a rejected zero-identity submission anymore (`VALIDATION_ERROR` now only fires on a genuinely empty submit: no text *and* no file). |
+| **Attachments are staged, not fire-and-forget.** | The prior pass uploaded a CSV the instant it was picked/dropped, as its own timeline entry. This pass stages it as a removable chip and sends it together with whatever text is in the composer on the next `Enter`/send click — matching the backend's ability to combine `text` + `file` into one prompt for the model. |
+| **One result shape: a markdown chat message.** | There is no more per-mode result card. `chat.text` is always rendered through `react-markdown` inside `.markdown`-scoped typography (same compact heading/list/table/code styling introduced in the prior pass's device-card fix, now the *only* rendering path instead of one of three). |
+| **Conversations actually continue.** | `threadId` is sent with every `POST /api/v1/runs` after the first message in a session, so a follow-up like "what did I just ask you?" works — verified live against the real backend (see `backend.md`'s Live Smoke Test). "New chat" clears the local timeline *and* rolls a new `threadId`, so it also starts a fresh thread server-side rather than just hiding old messages while secretly still appending to the same backend history. |
+| **No canvas, no data-table view — for now.** | This was a deliberate scope decision following the operator's explicit "general chat, like claude.ai" answer over "keep specialized structured cards." The asset-report tool's rows still exist (the model narrates them, often as a markdown table in the response), but there is no dedicated sortable/filterable/exportable table view anymore. Flagged as an Open Question below in case that's wanted back for large reports. |
+| **Session-only history, unchanged.** | Still `sessionStorage`-backed (thread entries + `threadId`), still disclosed in the empty state. `usePersistentState` (`localStorage`) is still theme-only. |
+| **No nav rail, no canvas toggle, no routing.** | The top bar is now just brand + theme toggle — there is one screen, so there is nothing to switch between. `react-router-dom` was removed from `package.json` since nothing imports it anymore. |
+| **A live activity feed, not a static spinner, while a run is `running`.** | Message-level tool-call/result progress (from `RunSummary.activity`) is enough to make a real ~30-45s multi-tool turn feel alive instead of hung — matches the "with claude, at least you can see it thinking" operator feedback without needing token-level streaming (which the SDK's `sdk.query()` doesn't expose without `include_partial_messages`, not adopted this pass — see Open Questions). |
 
 ## Routes & Screens
 
-Routing uses `react-router-dom` with deep-linkable paths per SAD §3.2.
-
-| Route | Screen | Access |
-| --- | --- | --- |
-| `/workspaces/:id` | Copilot Chat with optional canvas side panel | Workspace User |
-| `/workspaces/:id/canvas` | Full-width Live Canvas | Workspace User |
-| `/workspaces/:id/activity` | Session activity timeline | Workspace User |
-| `/workspaces/:id/settings/tools` | Tool configuration | Administrator |
-| `/workspaces/:id/settings/actions` | Action request lifecycle | Administrator |
-| `/workspaces/:id/settings/credentials` | Credential management (inert — no endpoint) | Administrator |
-| `/workspaces/:id/settings/health` | Live API probes | Administrator |
-
-Administration routes redirect to chat when the client-side role is not administrator. This is UX filtering only; the server enforces authorization on every request.
-
-## Delivered Features
-
-**Copilot Chat** (`src/features/chat/`)
-- Auto-growing composer; `Enter` sends, `Shift`+`Enter` inserts a newline.
-- Live parse preview (accepted / ignored / routing mode).
-- CSV upload via the `+` menu or drag-and-drop, validated client-side against the server's `.csv` and 5 MiB constraints before upload.
-- Message timeline with user bubbles and agent run cards showing status, mode, accepted/rejected counts, run ID, correlation ID, and copy-to-clipboard for support.
-- Suggestion cards on the empty state that seed the composer with representative inputs (single, cohort, batch).
-
-**Live Canvas** (`src/features/canvas/`)
-- Rows derived from every accepted identifier in a run, filterable by username, status, and run.
-- Multi-select with a selection action bar that creates a scoped action request.
-- CSV export of the current filtered view.
-- Renders as a compact side panel next to chat and as a full-width, centre-constrained page.
-
-**Action Requests** (`src/features/actions/`)
-- Creation dialog restricted to the server's allowlisted `(connector, operation)` pairs, with an explicit target preview and expiry statement.
-- Lifecycle view with a three-step progress indicator, live expiry countdown, and controls gated on real state (`pending_confirmation` → `confirmed` → `executed`).
-
-**Tools** (`src/features/settings/ToolsView.tsx`)
-- Table of tool definitions with integration, assigned agents, parameter summary, enabled state, and configuration version.
-- Editor dialog with an enable switch, agent chips, JSON parameter editing with parse validation, and a dirty-state warning naming the resulting version.
-- HTTP 409 conflicts reload authoritative server state and inform the user rather than silently discarding the edit.
-
-**Health** (`src/features/settings/HealthView.tsx`)
-- Live probes against `GET /health` and `GET /ready` with measured round-trip latency. This screen shows real data, not a placeholder.
-
-**Activity** (`src/features/activity/`)
-- Reconstructed timeline of runs and action transitions with actor and correlation metadata, explicitly labelled as browser-session state rather than a server audit log.
-
-## Deliberately Inert
-
-`CredentialsView` is presented as a documented gap, not a mock. The MVP API exposes no `/admin/credentials` route; building a form that appears to store secrets and does not would be worse than showing nothing. The view states the missing endpoint and lists the requirements the real implementation must satisfy (write-only secret inputs, alias/status metadata, credential version, server-side authorization).
-
-Connector-level diagnostics on the Health screen are handled the same way.
+Just `/` — a single chat screen. There is no `/canvas` route anymore (deleted, see above), no
+`/workspaces/:id/*`, no settings/actions/activity/health routes (unchanged from the prior pass — no
+backing endpoints exist for any of those).
 
 ## API Integration
 
-`src/api/client.ts` wraps every endpoint the backend serves:
+`src/api/client.ts` wraps the entire live API (still 4 routes total, per `backend.md`):
 
-| Method | Endpoint |
-| --- | --- |
-| `GET` | `/health`, `/ready` |
-| `POST` | `/workspaces/{id}/runs`, `/workspaces/{id}/runs/upload` |
-| `GET` | `/workspaces/{id}/runs/{runId}` |
-| `GET` / `PATCH` | `/workspaces/{id}/admin/tools[/{toolId}]` |
-| `POST` | `/workspaces/{id}/action-requests[/{actionId}/confirm|/execute]` |
-
-Error handling normalises both FastAPI's `{ detail }` shape (including 422 validation arrays) and the project's `{ error, correlation_id }` envelope into a typed `ApiError` carrying `status` and `correlationId`. Network failures produce an actionable message naming the target URL.
-
-**Corrected contract mismatches from the first pass:**
-- `ToolConfigView.assigned_agents` is `string[]`. Python's `set[str]` serialises to a JSON array; the previous `Set<string>` typing was wrong and `Array.from()` on a plain array silently produced empty output.
-- Action requests are created as `pending_confirmation`, not `pending`. The previous confirm button was gated on a status the server never emits, so confirmation was unreachable through the UI.
-- The action operation form is constrained to `ALLOWED_ACTIONS`; free-text operations were rejected with 422.
-
-## CORS and the Dev Proxy
-
-The backend registers no CORS middleware, so a browser at `http://localhost:5173` calling `http://localhost:8000` is blocked by the same-origin policy. The first pass was validated with `curl`, which does not enforce CORS, so this never surfaced.
-
-`vite.config.ts` now proxies `/api` to `VITE_API_PROXY_TARGET` (default `http://127.0.0.1:8000`), and `VITE_API_BASE_URL` defaults to the relative `/api/v1`. The browser only ever talks to its own origin. Pointing `VITE_API_BASE_URL` at an absolute URL remains supported for a CORS-enabled deployment.
-
-## Runtime Controls
-
-| Variable | Default | Purpose |
+| Method | Endpoint | Client function |
 | --- | --- | --- |
-| `VITE_API_BASE_URL` | `/api/v1` | API base path used by the browser |
-| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:8000` | Dev-server proxy target |
-| `VITE_PORT` | `5173` | Dev/preview server port |
-| `VITE_DEV_ROLE` | `workspace_user` | Initial simulated role |
-| `VITE_DEV_ACTOR_ID` | `local-dev-user` | `X-Actor-Id` header value |
-| `VITE_WORKSPACE_ID` | `550e8400-…0000` | Workspace opened by default |
+| `GET` | `/api/v1/health`, `/api/v1/ready` | *(not called by this client, unchanged)* |
+| `POST` | `/api/v1/runs` (JSON `{text, thread_id}` or multipart `file`+`text`+`thread_id`) | `api.createRun({text, file, threadId})` — single function, replaces the prior pass's `createRunFromText`/`createRunFromFile` split |
+| `GET` | `/api/v1/runs/{run_id}` | `api.getRun` (polled by `useRunPolling`, unchanged) — response now also carries `activity: string[]` (**[new, same day]**), rendered as a live feed by `Message.tsx` while `status === "running"` |
 
-The simulated role is persisted and applied synchronously at module load, so the first request a component issues already carries the correct `X-Role`. (An effect-based approach raced with child data-loading effects and produced a spurious 403 on the Tools screen.)
-
-## Directory Structure
-
-```text
-frontend/src/
-  app/          App.tsx, SessionContext.tsx, Sidebar.tsx, TopBar.tsx, AppShell.css
-  components/   Icon, Menu, Modal, Toast, CommandPalette (+ styles)
-  features/
-    chat/       ChatView, Composer, Message, parseInput
-    canvas/     CanvasPanel
-    actions/    ActionsView, ActionRequestDialog
-    activity/   ActivityView
-    settings/   ToolsView, CredentialsView, HealthView
-  hooks/        usePersistentState (+ useHotkey, useMediaQuery), useRunStatus
-  api/          client.ts
-  types/        api.ts
-  lib/          uuid.ts
-  styles/       tokens.css, base.css
-```
+Error handling (`ApiError`, the `{error:{code,message}}` envelope, network-failure messaging) is
+unchanged — the error contract itself didn't change in this pivot, only the success-path result
+shape and the request body's new `thread_id` field.
 
 ## Accessibility
 
-- Full keyboard operation: `⌘K` palette, `⌘B` navigation, `⌘\` canvas, `Enter`/`Shift`+`Enter` in the composer, arrow-key navigation and `Escape` dismissal in palette, menus, and dialogs.
-- Visible focus rings on every interactive element via a global `:focus-visible` rule.
-- Semantic landmarks and table headers; `aria-label` on icon-only controls; `aria-pressed` on toggles; `aria-selected` on palette options.
-- `role="status"` live regions for run progress and toasts.
-- Status is never conveyed by colour alone — every badge pairs colour with a label, and several add a dot or icon.
-- `prefers-reduced-motion` disables animation globally.
-- Both themes use tokens chosen for contrast against their surfaces.
-
-## Known Gaps
-
-| Gap | Cause | Handling |
-| --- | --- | --- |
-| Runs never leave `queued` | No orchestration worker in the MVP backend | Polling stops after 30 s; the run card explains why |
-| No server-side canvas work items | `CanvasWorkItem` not persisted | Rows derived from submitted input; provisional client IDs, disclosed in the action dialog |
-| No SSE or WebSocket | Not implemented server-side | Bounded polling via React Query |
-| No credential endpoints | Not implemented server-side | View is inert and documents the requirement |
-| No connector diagnostics | Not implemented server-side | Health shows real API probes only |
-| No run/action list endpoints | Not implemented server-side | History persisted per browser in `localStorage` |
-| Dev header identity | No OIDC integration yet | Clearly labelled `DEV IDENTITY`; server still authoritative |
-| No automated tests | Out of MVP scope | Verified by typecheck, lint, build, and scripted browser walkthrough |
+Unchanged in substance from the prior pass (full keyboard operation, visible focus rings, semantic
+markup, live regions for status transitions, no color-only status, `prefers-reduced-motion`) — none
+of it depended on the deleted canvas/mode-card surfaces. The one removed accessibility-relevant
+control is `ReportDownloadButton`'s always-visible disabled-state explanation, since the control
+itself (and the full-report route it was waiting on) no longer has a UI surface to attach to.
 
 ## Validation
 
-- `npx tsc -b` — clean.
-- `npm run lint` (oxlint) — 0 errors, 11 warnings, all `set-state-in-effect` on legitimate async-load effects or `only-export-components` fast-refresh advisories.
-- `npm run build` — succeeds; ~330 kB JS (101 kB gzip), ~46 kB CSS (8.5 kB gzip).
-- Scripted headless-Chromium walkthrough against the live backend covering: empty state, suggestion seeding, micro-query submission, batch submission, run polling, sidebar collapse, command palette, full-page canvas, row selection, action dialog, tools list, tool editor, health probes, activity, action requests, and mobile drawer — **no console or page errors**.
-- Role authorization verified in-browser: Tools returns data as administrator and a handled 403 notice as workspace user.
+- `npx tsc -b` (and `--force`) — clean, no errors.
+- `npx oxlint src` — same pre-existing warning categories as the prior pass (`set-state-in-effect` on
+  legitimate async-load effects — including the new Composer file-attach flow; `only-export-components`
+  fast-refresh advisories), no new categories introduced.
+- `npm run build` — succeeds; `dist/assets/index-*.js` **399 kB (122.5 kB gzip)**, up from 360 kB
+  (111.6 kB gzip) after adding `remark-gfm` for the table-rendering fix (see "What Changed") — still
+  well below the original 410 kB (128 kB gzip) enterprise-scaffold pass.
+- **Live backend contract validated directly** (not just typechecked against prose): the real
+  `session-host` process was exercised with `curl` for a general open-ended question, a real
+  `nick.sanchez` lookup, and a two-turn memory test — see `backend.md`'s Live Smoke Test for the
+  actual request/response pairs this client's types were built against.
+- **[Resolved, same day] Live browser round-trip through the actual Vite dev-server proxy.** The
+  original pivot pass hit an environment-specific issue where a `nohup ... & disown`-detached dev
+  server was unreachable across separate shell tool calls in this sandbox. Root-caused: launching
+  `npm run dev` as a normal foreground command (which the tool harness itself moves to background
+  after a timeout, keeping it attached to a tracked shell) stays reachable across calls; the earlier
+  failure was from manually detaching it (`nohup`+`disown`) into a shell the harness no longer
+  tracks, not a code defect. Re-verified live through `http://localhost:5173` (the actual dev-server
+  proxy origin, not a direct backend call): a general chat turn, two-turn memory, and the
+  `nick.sanchez` lookup (34.1s, full markdown response including tables) all round-tripped
+  correctly.
 
 ## Development Workflow
 
+**[New, same day]** One-command launcher for a local demo, `scripts/dev.sh` (repo root): frees
+stale 8100/5173 listeners, starts the session host, polls `/health` until it's actually up (not
+just "process started"), warns on a `/ready` problem, auto-creates `frontend/.env.local` if
+missing, then runs the frontend dev server in the foreground so `Ctrl+C` stops both.
+
+```bash
+./scripts/dev.sh
+```
+
+Or by hand, in two terminals:
+
 ```bash
 # Terminal 1
-cd backend && uv run uvicorn backend.main:app --reload --port 8000
+cd session-host && uv run python -m fleet_session_host
+# Listens on 127.0.0.1:8100
 
 # Terminal 2
 cd frontend && npm install && cp .env.example .env.local && npm run dev
 # http://localhost:5173
 ```
 
-Switch roles from the account menu in the top bar, or with `⌘K` → "Switch role to Administrator".
+## Directory Structure
+
+```text
+frontend/src/
+  app/          App.tsx, AppState.tsx, TopBar.tsx, AppShell.css
+  components/   Icon, Menu, Toast (+ styles)
+  features/
+    chat/       ChatView, Composer, Message (renders chat.text via react-markdown), parseInput (CSV guardrails only)
+  hooks/        usePersistentState (+ useSessionState, useHotkey, useMediaQuery), useRunPolling
+  api/          client.ts
+  types/        api.ts
+  styles/       tokens.css, base.css
+```
+
+`features/canvas/`, `ResultCards.tsx`/`.css`, `ReportDownloadButton.tsx`, and `lib/csv.ts` from the
+prior pass no longer exist.
 
 ## Assumptions
 
-1. Backend behaviour is taken from `backend/main.py`, `backend/services.py`, and `backend/schemas.py` as the contract of record where documentation and code diverge.
-2. Deriving canvas rows from submitted input is an acceptable MVP stand-in for server-side work items, given it is disclosed in the UI.
-3. Persisting thread and canvas state in `localStorage` is acceptable because no list endpoints exist; it is per-browser and not shared collaboration state.
-4. Bounded polling is an acceptable interim for SSE/WebSocket at MVP scale.
-5. Plain CSS with a token layer is preferred over a component library for a small surface with a specific visual identity.
-6. The Vite dev proxy is the correct place to resolve CORS, since modifying backend middleware is outside this persona's scope.
+1. "Attach a CSV" staging (send-together-with-text) rather than immediate-fire-on-select is a UX
+   improvement consistent with the backend's new combined-prompt support, not something explicitly
+   requested — flagged here in case the operator prefers the old immediate-fire behavior.
+2. Dropping the canvas/data-table view entirely (rather than, say, keeping it as an optional view of
+   any markdown table the model happens to return) follows directly from the operator's explicit
+   "general chat, like claude.ai" choice over "keep specialized structured cards" — revisit if a
+   large asset report turns out to be hard to read as a chat-embedded markdown table.
+3. `threadId` reset on "New chat" is read as the obviously-intended behavior of that button (start
+   over, including server-side memory) — not separately confirmed with the operator.
 
-## Open Questions
+## Open Questions / Known Gaps
 
-1. Should `CanvasWorkItem` IDs be minted server-side on run creation so action requests target durable entities? (Blocks real remediation.)
-2. Will run progress use SSE, WebSocket, or both? The canvas needs workspace-scoped events; chat needs run-scoped streaming.
-3. Should CORS middleware be added to the backend, or is a same-origin reverse proxy the intended deployment topology?
-4. What is the authoritative agent list for tool assignment? The editor currently offers `orchestrator`, `analysis`, and `dispatch` inferred from seed data.
-5. Should the activity timeline be replaced by a server-side audit query endpoint before Deliver?
-6. Is a shared design-token package needed if other Fleet Recon surfaces are built later?
+| Gap | Cause | Handling |
+| --- | --- | --- |
+| No data-table/canvas view for large asset reports | Deliberately dropped this pass (see Assumptions #2) | The model narrates rows as markdown text/tables in the chat message; a very large report (dozens+ rows) may be unwieldy to read this way — revisit if that turns out to matter in practice |
+| Frontend is still `localhost`-only; the operator's stated audience is local-network colleagues | `backend.md`'s Known Gaps — the backend itself is still bound to `127.0.0.1` with no CORS | Explicitly scoped out for now — operator confirmed the near-term need is a single-machine/screen-shared demo, not colleagues opening it on their own laptops. `@devops.eng`/`deploy.md` pass (host bind, CORS or reverse proxy) still needed before that changes. |
+| No authentication of any kind | Unchanged from the prior pass, and now materially higher-stakes (13 real MCP servers attached, not 3 narrow ones) | Nothing in this client simulates or requires identity; matches the operator's explicit "no access control for now" answer |
+| No SSE/WebSocket | Unchanged — still two-phase bounded polling (2.5s fast / 8s slow / 2-minute hard stop) | A general chat turn calling several tools can still take under a minute; the new `activity` feed (see "What Changed") gives per-tool-call progress within that window instead of a static spinner, but it is still polling, not push |
+| Activity feed is message-level, not token-level | `sdk.query()` yields whole content blocks, not streaming deltas, unless `include_partial_messages=True` (not adopted — bigger change, more chatty wire protocol) | Good enough to show "what tool is running now," not a token-by-token typing effect like claude.ai's final answer text |
 
 ## Sources
 
-- `project-context/1.define/prd.md` — product scope, user flows, FR-1 through FR-9.
-- `project-context/1.define/sad.md` — SAD §3 Frontend Architecture Specification, §3.2 structure, §3.3 interface requirements.
-- `project-context/2.build/backend.md` — backend endpoints, runtime controls, known gaps.
-- `backend/main.py`, `backend/services.py`, `backend/schemas.py` — authoritative API behaviour, status vocabulary, and validation limits.
-- [React](https://react.dev), [Vite](https://vite.dev), [TanStack Query](https://tanstack.com/query), [React Router](https://reactrouter.com)
+- Operator direction, 2026-08-31 (see `backend.md`'s Sources for the exact quotes) and the resulting
+  backend pivot.
+- `project-context/2.build/backend.md` (2026-08-31 entry) — the new API contract this pass mirrors.
+- Live `curl` exercises against the real running `session-host` (see `backend.md`'s Live Smoke Test)
+  — this pass's types were written against those actual responses, not just backend.md's prose.
+- Prior `frontend.md` (2026-08-30 rebuild) — preserved in git history; its design-system, theming,
+  and accessibility sections are the basis for everything marked "unchanged" above.
 
 ## Audit
 
-- **2026-08-27, 16:00–16:45 UTC** | `@frontend.eng` | `*develop-fe`, `*add-placeholders`, `*style-ui`, `*document-frontend`
-  - Initial implementation: Vite scaffold, chat composer, run polling, admin tool management, action request flow, placeholder screens, plain-CSS styling, typed API client.
+- **Timestamp:** 2026-08-31
+- **Persona id:** `frontend-eng` (pivot; superseding the 2026-08-30 rebuild record)
+- **Actions:** operator-directed product pivot, `develop-fe`, `document-frontend`
+- **What was done:** rewrote `types/api.ts`/`api/client.ts` for the new `thread_id`/`chat.text`
+  contract; gutted `parseInput.ts` to CSV-only guardrails; rewrote `Composer.tsx` (staged attach,
+  no identity gate); merged `ResultCards.tsx` into `Message.tsx` (single markdown result path);
+  deleted `features/canvas/*`, `ReportDownloadButton.tsx`, `lib/csv.ts`; simplified `AppState.tsx`
+  (dropped canvas state, added `threadId`), `App.tsx`, `TopBar.tsx`, `main.tsx` (dropped
+  `react-router-dom` entirely, now removed from `package.json`); ran `npx tsc -b` (clean),
+  `npx oxlint src` (same pre-existing warnings, no new categories), `npm run build` (360 kB JS /
+  111.6 kB gzip, down from 410 kB / 128 kB).
+- **Runtime library versions:** `react@19.2.8`, `react-dom@19.2.8`, `@tanstack/react-query@5.102.8`,
+  `react-markdown@10.1.0`, `typescript@6.0.2`, `vite@8.2.2`, `oxlint@1.79.0` — `react-router-dom`
+  removed (`npm uninstall`, 4 packages removed).
+- **Prompt Trace:** omitted — deterministic rewrite against a directly-preceding backend contract
+  change and live-validated API responses, not a model-authored product decision requiring trace
+  capture per `aamad-core.mdc`.
+- **Security:** no secrets read or written; no real employee/device data was copied into any tracked
+  file (the live responses referenced in `backend.md` were read, not persisted, by this pass).
 
-- **2026-08-27, 23:15–00:15 UTC** | `@frontend.eng` | `*develop-fe`, `*style-ui`, `*document-frontend`
-  - Rebuilt the interface after operator feedback that the first pass was amateurish.
-  - Added `styles/tokens.css` and `styles/base.css` design system with light/dark themes.
-  - Replaced the header-only layout with a collapsible navigation rail, top bar, mobile drawer, and `react-router-dom` routing per SAD §3.2.
-  - Removed the "Paste Usernames" menu item; input kind is now inferred by `parseInput()` with live composer feedback.
-  - Made the canvas opt-in, auto-opening on first result, with filters, multi-select, and CSV export.
-  - Added toast notifications, command palette, modal system, and keyboard shortcuts.
-  - Rewrote Health against live `/health` and `/ready`; kept Credentials deliberately inert with documented requirements.
-  - Fixed contract defects: `assigned_agents` array typing, `pending_confirmation` status, allowlisted operations.
-  - Fixed CSS import ordering, the dev-identity race producing a false 403, and added the Vite `/api` proxy to resolve the CORS blocker.
-  - Verified with typecheck, lint, production build, and a scripted headless-browser walkthrough against the live backend.
+### Follow-up Audit — same day, demo readiness + live activity feed
 
-## Next Steps
+- **Timestamp:** 2026-08-31 (later same day)
+- **Persona id:** `frontend-eng`
+- **Actions:** operator ask ("i want it to work locally so we can run it for a demo"), then two bug
+  reports ("it's static while looking up... with claude, at least you can see it thinking" /
+  "tables do not render in markdown"), `develop-fe`, `document-frontend`
+- **What was done:**
+  - Added `scripts/dev.sh` (one-command local launcher) and rewrote `frontend/README.md`'s Quick
+    Start/Using it/Structure/Known-gaps sections, which had not been updated for the pivot and still
+    described the deleted mode-router/canvas UI.
+  - Live-verified the full stack through the actual Vite proxy origin (`localhost:5173`, not a
+    direct backend call) — general chat, multi-turn memory, and a real `nick.sanchez` lookup
+    (34.1s) — root-causing and resolving the earlier "not done this pass" browser-round-trip gap
+    (see "Validation").
+  - Added `remark-gfm` and wired `remarkPlugins={[remarkGfm]}` into `Message.tsx`'s `ReactMarkdown`
+    call, fixing GFM tables rendering as raw `\|`-delimited text.
+  - Added `RunSummary.activity: string[]` to `types/api.ts`; replaced `Message.tsx`'s static
+    "Thinking..." summary + indeterminate progress bar with a live feed of the last 5 `activity`
+    lines (newest highlighted, `checkCircle` on settled lines, spinning icon on the current one);
+    replaced the corresponding CSS (`.msg__activity*` in `Message.css`, removed the old
+    `.msg__progress*`/`@keyframes indeterminate`).
+  - `npm run build` — clean (see "Validation" for updated bundle size).
+- **Runtime library versions:** added `remark-gfm@4` (checked in `package.json`/`package-lock.json`);
+  no other dependency changes.
+- **Prompt Trace:** omitted — deterministic bug fixes (missing plugin wiring, missing progress
+  surface) driven directly by operator-reported, reproduced defects, not a model-authored product
+  decision requiring trace capture per `aamad-core.mdc`.
+- **Security:** no secrets read or written; live-test responses (the `nick.sanchez` profile/asset
+  data) were read for verification only, not persisted into this document or any other tracked file
+  beyond field-name-level description, matching the standing pattern from the initial pivot pass.
 
-1. **Phase 2 Iteration 2** — server-side `CanvasWorkItem` persistence and workspace event delivery; replace derived rows and bounded polling.
-2. **Phase 2 Iteration 3** — credential and connector-diagnostics endpoints; activate the two inert surfaces.
-3. **Phase 3** — replace dev header identity with verified OIDC claims; decide the CORS/reverse-proxy topology for deployment.
-4. **Testing** — component tests for `parseInput` and the action state machine; end-to-end coverage of the confirm/execute flow.
+---
+
+*The 2026-08-30 session-host-rebuild record (workspace/admin/action-request removal, the original
+mode-router-based `types/api.ts`/`Composer`/canvas build) that this document superseded has been
+removed from this file to keep it navigable; recover it from git history
+(`git log -p -- project-context/2.build/frontend.md`) if needed.*

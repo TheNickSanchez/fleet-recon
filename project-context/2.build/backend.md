@@ -1,27 +1,29 @@
-# Fleet Recon Backend Implementation — Session Host (supersedes the CrewAI record below)
+# Fleet Recon Backend Implementation — Session Host
 
-**This document supersedes the previous `backend.md`** (CrewAI Application Crew + FastAPI enterprise scaffold in `backend/`). That tree is leftover, unused, and must not be treated as the product — see `project-context/1.define/architecture-fork.md` and `project-context/2.build/setup.md`. The Fleet Recon MVP backend **is** the session host in `session-host/fleet_session_host/`: a preprocessor, a host script runner that wraps the existing `passkey`-invoked asset-ops scripts, and a Claude Agent SDK session for one-identifier lookups over local stdio MCP. There is no CrewAI kickoff, no Postgres, no Redis, no OIDC, and no admin console in this MVP.
+**Product pivot, 2026-08-31 — this document supersedes the mode-router record below it (2026-08-29/30), which itself superseded the original CrewAI record.** The operator's own words: *"the goal of this app: it should be like Claude but with all my skills and MCP tools attached already."* The previous MVP routed every message through a deterministic preprocessor that picked between exactly two hardcoded modes (`device_lookup` for one identity, `asset_ops` for a list/CSV) and rejected anything else outright. That is now gone. The session host is a **general-purpose chat backend**: every message is one turn of one Claude Agent SDK session that has every MCP server the operator has registered in their own Claude Code config attached (13 servers on this machine — ServiceNow, Jamf, Intune, Tenable, Atlassian, Slack, and Google Workspace), plus one custom tool wrapping this repo's existing deterministic asset-report pipeline. There is still no CrewAI kickoff, no Postgres, no Redis, no OIDC, and no admin console.
 
-Runtime: `AAMAD_TARGET_RUNTIME=claude-agent-sdk` (from `aamad.config.yml`; process env was unset). Adapter: `.cursor/rules/adapter-claude-agent-sdk.mdc`.
+Runtime: `AAMAD_TARGET_RUNTIME=claude-agent-sdk` (from `aamad.config.yml`). Adapter: `.cursor/rules/adapter-claude-agent-sdk.mdc`.
 
 ## Scope
 
-Implemented `lookup-user-devices` end to end on this machine (local `passkey` profiles + local Claude Code stdio MCP config), per SAD §1–§2/§6.4, PRD FR-1/FR-2/FR-3/FR-10/US-8, and `sfs/lookup-user-devices.md`:
-
-- Deterministic preprocessor: instruction-stopword stripping, sanitize/dedupe, skill bind (`device_lookup` vs `asset_ops`), persisted `intent_id`/`skill_id`/`mode`/`input_count` with no mid-run route change.
-- `asset_ops`: host writes a temp username CSV (or passes through an uploaded CSV as-is), then subprocesses `asset_report_build.py` (passkey `servicenow`) and `asset_report_mdm.py` (passkey `jamf_api` + `intune`) with a **fixed argv** — never a shell string built from chat text, never unconstrained Bash. Emits `chat.csv_preview`.
-- `device_lookup`: Claude Agent SDK session with `allowed_tools` locked to the `device-lookup` skill's three tools, enforced a second time by a `PreToolUse` hook. Loads `MCP_SERVERS_CONFIG` (stdio only); returns a Diagnostic instead of a fabricated lookup when the operator hasn't filled in the real MCP command/args yet.
-- Thin private HTTP API on `127.0.0.1:8100` for the future Vite proxy (not wired by this persona).
-- 25 passing unit tests with no live vendor calls (mocked subprocess / no-SDK-import diagnostic paths).
-- **Live-smoke validated on this machine, both paths** (see "Live Smoke Test" below) — `asset_ops` ran against real ServiceNow + Jamf + Intune via the operator's `passkey` profiles, and `device_lookup` ran a real Claude Agent SDK session over local stdio MCP against the same real vendors, once the operator supplied real `mcp.stdio.json` values and a real LiteLLM key. Two real bugs surfaced only by this live `device_lookup` run (never reachable by mocked/diagnostic-path tests) were found and fixed — see "Live Smoke Test" and "Known Gaps".
+- **`chat.py`** — one function, `run_chat_turn`, replacing `device_lookup.py` and the model-facing half of `preprocessor.py`/`mcp_config.py` (both deleted, along with `test_preprocessor.py`/`test_mcp_config.py`/`test_device_lookup.py`). Every message is a Claude Agent SDK session with:
+  - Every MCP server mirrored 1:1 from the operator's `~/.claude.json` (`Settings.claude_config_path`, overridable per-machine) — not a curated 3-server subset.
+  - One in-process custom tool, `build_asset_report` (via `claude_agent_sdk.tool`/`create_sdk_mcp_server`), wrapping the **unchanged** `asset_ops.py` pipeline (fixed subprocess argv, no shell string) so the model can invoke it on its own judgment for a list/CSV instead of a regex preprocessor deciding for it up front.
+  - Multi-turn memory via context-stuffing prior turns into the prompt (`runs.RunStore.get_thread_history`), **not** the SDK's own `resume` — see "Known Gaps", this was tried first and rejected live.
+  - `Bash`/`Read`/`Write`/`Edit`/`Glob`/`Grep`/`WebFetch`/`WebSearch` deliberately disallowed — see "Known Gaps" for why, and what was deliberately left out of scope for this pass.
+- **`runs.py`** — reworked from a `QueryRun` record with `mode`/`skill_id`/`intent_id` to a `thread_id`-scoped chat turn, plus `RunStore.get_thread_history`/`append_thread_history` (capped at `MAX_HISTORY_TURNS = 12`).
+- **`api.py`** — the preprocessor gate is gone. `POST /api/v1/runs` accepts any non-empty text and/or a CSV file, with an optional `thread_id` to continue a conversation.
+- **[New, same day] Live activity feed.** First operator feedback after trying the general-chat pivot: *"it's still slow but it's fine. my issue is that it's static while looking up. with claude, at least you can see it thinking."* `run_chat_turn` now takes an `on_progress` callback invoked synchronously as the SDK streams tool calls/results, and `RunStore.append_activity` records each line on the `Run` for the client to poll and render — see "Live Activity Feed" below.
+- 31 passing unit tests (18 of the original 25 mode-router tests were replaced, not just deleted, at the pivot; 9 more added for the activity feed — see "Tests").
+- **Live-smoke validated on this machine 2026-08-31**: a general open-ended question, a real single-identity lookup (`nick.sanchez`, live ServiceNow+Jamf+Intune, richer output than the old narrow skill — it proactively flagged a serial mismatch between ServiceNow and Jamf), and a two-turn conversation proving context-stuffing memory actually works. See "Live Smoke Test".
 
 ## How to Run
 
 ```bash
 # From repository root
 cp .env.example .env
-# Fill ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / LITELLM_MODEL for device_lookup.
-# asset_ops needs no LiteLLM config -- only `passkey` on PATH with servicenow/jamf_api/intune profiles.
+# Fill ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / LITELLM_MODEL.
+# CLAUDE_CONFIG_PATH defaults to ~/.claude.json -- override if your MCP servers live elsewhere.
 
 cd session-host
 uv sync
@@ -29,14 +31,12 @@ uv run python -m fleet_session_host
 # Listens on 127.0.0.1:8100 (SESSION_HOST_HOST / SESSION_HOST_PORT)
 ```
 
-Pip fallback: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m fleet_session_host`.
-
 Tests:
 
 ```bash
 cd session-host
 uv run pytest -q
-# 25 passed
+# 31 passed
 ```
 
 ## Package Layout
@@ -44,222 +44,162 @@ uv run pytest -q
 ```text
 session-host/fleet_session_host/
   __main__.py       # uv run / python -m entrypoint; runs uvicorn on SESSION_HOST_HOST:PORT
-  settings.py        # env loading (.env.example names only), skeleton/readiness checks
-  preprocessor.py     # stopword stripping, sanitize/dedupe, skill bind (device_lookup vs asset_ops)
-  asset_ops.py         # temp CSV writer, fixed-argv passkey subprocess runner, partial-failure handling
-  csv_preview.py         # chat.csv_preview builder: fixed 12-column header, 10-row cap, truncated flag
-  mcp_config.py          # loads MCP_SERVERS_CONFIG, detects <OPERATOR_SUPPLY> placeholders
-  device_lookup.py       # Claude Agent SDK session, locked allowed_tools, PreToolUse hook, vuln short-circuit
-  runs.py                 # in-memory QueryRun record + thread-safe store (session-file retention, no DB)
+  settings.py        # env loading, skeleton/readiness checks, claude_config_path
+  chat.py             # general chat turn: full MCP parity, build_asset_report tool, history stuffing
+  asset_ops.py         # UNCHANGED: temp CSV writer, fixed-argv passkey subprocess runner
+  csv_preview.py         # UNCHANGED: chat.csv_preview builder, consumed internally by chat.py's tool
+  runs.py                 # in-memory Run record + thread-safe store, thread_id + history + activity, no DB
   api.py                   # Starlette app: /api/v1/health, /ready, /runs, /runs/{id}
-session-host/tests/         # 25 unit tests, no live vendors
+session-host/tests/         # 31 unit tests, no live vendors
 ```
 
-`backend/` (FastAPI + CrewAI) is untouched and unused. `session-host/pyproject.toml` gained `starlette`, `uvicorn`, and `python-multipart` as **explicit** direct dependencies (they were already transitively resolved by `claude-agent-sdk` — no new external dependency surface was introduced; this only makes the pin durable across SDK upgrades). `uv.lock` was re-resolved (`uv lock`) after the change; no other package versions moved.
+Deleted this pass: `preprocessor.py`, `mcp_config.py`, `device_lookup.py` (and their tests) — superseded by `chat.py`. `asset_ops.py` and `csv_preview.py` are untouched; they are still the safest, most deterministic part of this host and are now *reused*, not replaced.
 
-## Skill Bind (Preprocessor)
+## `chat.py` (General Chat Session)
 
-Pure host code, no MCP/script calls (`preprocessor.py`):
+`chat.py::run_chat_turn(run_id, prompt, settings, history)`:
 
-1. Tokenize raw text on identifier-shaped chunks (letters/digits/`.`/`_`/`-`/`%`/`+`/`@`).
-2. Drop any token that case-insensitively matches the instruction-stopword set (`look`, `up`, `these`, `users`, `devices`, `serial`, `hostname`, `username`, `please`, `for`, `the`, ... — see `STOPWORDS` in `preprocessor.py`). This is a heuristic list, not an exhaustive NLP model; see Open Questions.
-3. Canonicalize survivors (casefold, drop email domain) and dedupe, preserving first-seen order.
-4. Bind:
-   - Any CSV upload (any row count) → `asset_ops`, regardless of accompanying text.
-   - Exactly one surviving identity, no CSV → `device_lookup`.
-   - Two or more surviving identities, no CSV → `asset_ops`.
-   - Zero surviving identities, no CSV → rejected (`VALIDATION_ERROR`, no connector/script call).
-5. `mode`, `skill_id` (`lookup-user-devices`), `intent_id` (`asset-ops` / `device-lookup`), and `input_count` are set once at run creation and never mutated.
+1. Requires `ANTHROPIC_BASE_URL`/`LITELLM_MODEL` (Diagnostic if unset, same as before).
+2. Loads every `mcpServers` entry from `settings.claude_config_path` (default `~/.claude.json`) verbatim — `command`/`args`/`env` copied through, entries without a `command` skipped, never fabricated. On this machine that's 13 servers: `jamf`, `servicenow`, `intune`, `tenable`, `atlassian`, `slack`, `calendar`, `drive`, `gmail`, `people`, `docs`, `sheets`, `slides`.
+3. Registers one additional in-process MCP server, `fleet_recon`, with a single tool `build_asset_report(usernames: list[str], csv_path: str)` that calls the **existing, unchanged** `asset_ops.run_asset_ops` (same fixed-argv `passkey` subprocess pipeline as before) and returns the row count + preview rows as tool-result text for the model to narrate.
+4. `ClaudeAgentOptions`: `strict_mcp_config=True` (session is exactly the servers above, nothing auto-discovered beyond them), `setting_sources=["project"]` (loads `CLAUDE.md`/project settings if this repo ever adds one — it currently has none, so this is a no-op today, but is **not** `[]`; see "Known Gaps" for why bare `[]` broke session resume), `permission_mode="bypassPermissions"` (headless host, no human to click "allow"), `disallowed_tools` = `Bash`/`Read`/`Write`/`Edit`/`Glob`/`Grep`/`WebFetch`/`WebSearch`, `max_turns=30`.
+5. `prompt` is `_render_history(history, prompt)` — prior turns of the same thread rendered as a plain `User: .../Assistant: ...` transcript ahead of the new message, not the SDK's `resume`.
+6. Runs `claude_agent_sdk.query(...)`, concatenates assistant text blocks, returns `ChatResult(status, diagnostic, text)`.
 
-`MICRO_QUERY_MAX_SUBJECTS = 4` is **not implemented** here on purpose — it is not used to choose MCP vs scripts for a name list (SAD §1.2/§2.5).
+### Why raw Bash/filesystem tools are withheld
 
-## `asset_ops` (Host Script Runner)
+The operator's answer to "should the agent have ALL your skills and MCP tools" was explicit: **all**, with **no access control**, for **colleagues on the local network**. Two live findings changed how that got implemented:
 
-`asset_ops.py::run_asset_ops`:
+1. `~/.claude.json` has 13 MCP servers with real credentials — those are all attached, verbatim, satisfying "all my MCP tools" literally.
+2. The operator's *personal* Claude Code skills (`docs/.claude/skills/*` in this repo, plus `~/.claude/skills/twg-*` on this machine) are a different thing: they are written for a personal workspace (`~/work`, which does not exist on this machine, let alone a shared host) and at least one of them (`asset-ops/SKILL.md`'s Jamf group sync, `--mode replace`) is explicitly documented in its own text as **"dangerous, full overwrite."** Wiring raw `Bash` + those scripts open for any unauthenticated colleague on the LAN is a way to accidentally wipe a production Jamf group with zero audit trail of who did it. This was flagged to the operator live before implementation and not overridden.
 
-1. Refuse to run if `passkey` is not on `PATH` (`shutil.which`) — returns a Diagnostic naming the required profiles (`servicenow`, `jamf_api`, `intune`) instead of shelling out to anything.
-2. Write the identity list to `SESSION_TMP_DIR/<run_id>-usernames.csv` (header `Usernames`), or pass an uploaded CSV through unchanged to `SESSION_TMP_DIR/<run_id>-upload.csv` (the scripts already handle `Usernames`/`Username`/`Email`/`User Email` and strip domains).
-3. Step 1 — fixed argv, no shell string:
-   ```
-   passkey run servicenow -- <session-host-python> asset_report_build.py \
-     --location <tmp-csv> --output <SESSION_REPORTS_DIR>/devices-<run_id>.csv --platforms macOS,Windows
-   ```
-4. Step 2 — fixed argv:
-   ```
-   passkey run jamf_api -- passkey run intune -- <session-host-python> asset_report_mdm.py \
-     --location <SESSION_REPORTS_DIR>/devices-<run_id>.csv
-   ```
-5. `<session-host-python>` is `sys.executable` (the session host's own `uv`-managed interpreter, which already has `pandas`/`pyyaml`/`requests`) — not a second venv. Scripts are invoked by absolute path so `fleet_common` imports resolve regardless of subprocess `cwd`.
-6. Reads the result CSV with `pandas`, reindexes to the fixed 12-column header, and returns `chat.csv_preview`. If step 1 produces no file, the run is `failed`. If step 1 succeeds but step 2 fails, the run is `partial` and **still returns the step-1 CSV** (missing MDM columns render as `""`) — a failed source is a result state, not a crash (SAD §2.7).
-7. The model never sees the identity list or the CSV body — only the capped `stdout`/`stderr` tail from each step (`step1_summary` / `step2_summary`), and only for future/optional model narration; the HTTP API today does not forward these to a model at all (no model call happens on the `asset_ops` path).
+The resolution: this repo's own two *actually-implemented* capabilities (device/user lookup via MCP tool calls, asset reporting via `asset_ops.py`'s fixed-argv subprocess) are exposed as-is — no Bash needed for either, both were already safe before this pivot. The personal skill docs are left unreachable. If the operator wants raw shell access wired up anyway (e.g. to run other `docs/.claude/skills/*` playbooks through the chat), that is a deliberate, explicit follow-up decision, not a default.
 
-`--platforms "macOS,Windows"` is always passed for this skill, matching the task instruction ("use `--platforms` when the user asked for devices") and `docs/.claude/skills/asset-ops/SKILL.md`'s guidance for a computer-only device list.
+## Live Activity Feed
 
-## `device_lookup` (Claude Agent SDK)
+A ~30-45s multi-tool turn with a static "Thinking..." spinner reads as broken, not slow — the operator's exact words: *"i can see it thinking [with Claude]."* Message-level (not token-level) progress is enough to fix that, and the SDK message stream already carries it without any extra API calls:
 
-`device_lookup.py::run_device_lookup`, only reached when the preprocessor bound exactly one identity and no CSV:
+1. `run_chat_turn` accepts `on_progress: Callable[[str], None] | None`, called synchronously as `sdk.query(...)` streams messages.
+2. Iterates with `isinstance` checks (replacing the old duck-typed `getattr(message, "content", None)` that only ever captured `TextBlock.text`): an `AssistantMessage`'s `ToolUseBlock` → `_describe_tool_use` (`"Calling {server} -> {tool}..."`, unwrapping the CLI's `mcp__<server>__<tool>` namespacing via `_friendly_tool_name`; special-cased to `"Building the asset report..."` for `build_asset_report`); a `TextBlock` → `"Drafting the response..."` (once per uninterrupted run of text, reset by the next tool call, since a turn can interleave preamble text, tool calls, and a final answer); a `UserMessage`'s `ToolResultBlock` → `"Got a result back."` or a failure line if `is_error`.
+3. `api.py`'s `_process_chat_turn` wires the callback to `store.append_activity(run_id, line)` and seeds `"Connecting to the session..."` the moment a run flips to `running`, so the feed is never empty while polling.
+4. `Run.activity: list[str]` (new field, `runs.py`) is append-only while `status in ("queued", "running")` — `RunStore.append_activity` is a no-op once a run is terminal, so a background task's in-flight progress calls can never mutate a run the client already rendered as complete/failed. Exposed on `to_summary()` (and therefore every `GET /runs/{id}` poll response) as `activity`.
+5. Frontend (`frontend.md`) renders the last 5 lines as a live feed with the newest line highlighted, replacing the old indeterminate progress bar.
 
-1. If the phrasing matches vulnerability-assessment keywords (`vuln`, `cve`, `exposure`, `tenable`, ...), return a Diagnostic immediately — Tenable is explicitly **not** part of this skill's MVP tool set or MCP config (`docs/.claude/skills/device-lookup/SKILL.md` scopes it to vuln phrasing, but no Tenable server is configured for Fleet Recon; see "Do not build" in the task and setup.md's server list). This never imports the SDK.
-2. Load `MCP_SERVERS_CONFIG` (`mcp_config.py`). If the file is missing, malformed, missing a required server, or still has `<OPERATOR_SUPPLY>` placeholders, return a Diagnostic naming exactly what's missing. `asset_ops` is entirely unaffected by this check.
-3. If `ANTHROPIC_BASE_URL` / `LITELLM_MODEL` are unset, return a Diagnostic (no raw Anthropic fallback — LiteLLM only, per setup.md).
-4. Otherwise build `ClaudeAgentOptions`:
-   - `allowed_tools = ["mcp__jamf__jamf_get_device_summary", "mcp__intune__intune_lookup_device", "mcp__servicenow__snow_lookup_user_profile"]`. **Confirmed live**: the Claude Code CLI always registers MCP tools as `mcp__<server>__<tool>` (server name = the key in `mcp_servers`/`mcp.stdio.json`, i.e. `jamf`/`intune`/`servicenow`) — the bare name from `docs/.claude/skills/device-lookup/SKILL.md` is never callable. This was originally implemented with the bare names (matching the SKILL.md doc literally) and confirmed **broken** by a live run: the model correctly called `mcp__jamf__jamf_get_device_summary`, and the `PreToolUse` hook denied it because the bare-name allowlist never matched, burning all turns on denials before the run failed on `max_turns`. Fixed in both `ALLOWED_TOOLS` and the hook's allowlist.
-   - `disallowed_tools` includes `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch`, `WebSearch`.
-   - `strict_mcp_config=True`, `setting_sources=[]`. **Added after a live finding**: without these, the bundled Claude Code CLI subprocess also auto-discovers the operator's own `~/.claude.json` (all `user`/`project` settings sources, plus every other locally-registered MCP server — in this operator's case 10 additional servers: `atlassian`, `slack`, `calendar`, `drive`, `gmail`, `people`, `docs`, `sheets`, `slides`, `tenable`) and merges them in alongside the 3 servers passed programmatically. The model saw a much larger tool surface than intended and burned turns exploring it via the CLI's built-in `ToolSearch` tool, even though `PreToolUse` would still have denied any call outside the allowlist. `strict_mcp_config` restricts the session to exactly the `mcp_servers` passed in; `setting_sources=[]` stops the CLI from loading the operator's personal settings at all.
-   - `hooks={"PreToolUse": [...]}` — a second, independent enforcement layer that denies any tool call whose name is not in the allowlist, with a `permissionDecisionReason`. This is defense in depth on top of `allowed_tools`/`disallowed_tools`.
-   - `mcp_servers` built only from non-placeholder entries in `MCP_SERVERS_CONFIG` (`type: stdio`, `command`, `args`, `env` verbatim from the operator's file — nothing invented).
-   - `model=LITELLM_MODEL`, `env={"ANTHROPIC_BASE_URL": ..., "ANTHROPIC_API_KEY": ...}`.
-   - `max_turns=10` (raised from an initial `6` after live testing: even with the tool-name fix, the model reliably spends 1-2 turns on a denied `ToolSearch` attempt and occasionally retries a tool call with the wrong argument name — e.g. `serial` vs. the real `serial_number` — before succeeding. A single-device serial lookup was observed completing at exactly `num_turns=6`, leaving zero margin for a username that fans out to ServiceNow + Jamf/Intune).
-5. Runs `claude_agent_sdk.query(...)`, collects assistant text blocks, and returns a `chat.device_card` (conversational summary), never a CSV.
+Live example (real `nick.sanchez` lookup, 2026-08-31): `Connecting to the session...` → `Drafting the response...` (the model's preamble, e.g. "I'll look up Nick Sanchez's profile...") → `Calling ToolSearch...` → `Got a result back.` → three parallel tool calls (`servicenow -> snow_lookup_user_profile`, `jamf -> jamf_get_user_devices`, `intune -> intune_lookup_users`) each followed by `Got a result back.` → `Drafting the response...` again for the real final answer → `completed`.
 
-`claude_agent_sdk` is imported **lazily inside the function**, not at module import time, so the rest of the host (and its tests) never depend on the SDK being importable, and the placeholder-config Diagnostic path never triggers a model call.
+## HTTP API
 
-**This path was live-smoke-tested** on this machine (see "Live Smoke Test" below) once the operator supplied real `mcp.stdio.json` values (copied from `~/.claude.json`) and a real LiteLLM key/base URL/model. Both a bare-serial identifier and a multi-device username identifier completed successfully end to end against real Jamf/Intune/ServiceNow, after the two fixes above.
-
-## `chat.csv_preview` Contract
-
-`csv_preview.py` builds the exact SAD §2.6 / PRD FR-10 payload for every `asset_ops` run, 4 names or 50:
-
-```json
-{
-  "type": "chat.csv_preview",
-  "filename": "devices-<run_id>.csv",
-  "headers": ["Username", "Serial", "Platform", "State", "Substate", "Model", "Asset Tag", "Notes", "MDM", "MDM Status", "MDM Last Check-In", "MDM Detail"],
-  "preview_rows": [ { "Username": "...", "...": "..." } ],
-  "row_count": 0,
-  "truncated": false,
-  "file_ref": "devices-<run_id>.csv"
-}
-```
-
-`preview_rows` is a list of **objects** keyed by header name (the spec's JSON example left the row shape implicit — see Assumptions). Capped at 10 data rows; `row_count` is the true row count from the file; `truncated = row_count > 10`. Any of the 12 fixed columns missing from the on-disk CSV (e.g. the MDM step failed) is padded with `""` rather than changing the payload shape per run.
-
-## HTTP API (Minimum, Same-Origin, Private Bind Only)
-
-Binds to `SESSION_HOST_HOST:SESSION_HOST_PORT` (default `127.0.0.1:8100`). No CORS middleware. No admin routes, no action-confirm, no canvas, no OIDC. Not an open proxy — every route either runs the deterministic preprocessor or reads back an already-computed run record; nothing here forwards arbitrary input to MCP or `passkey`.
+Binds to `SESSION_HOST_HOST:SESSION_HOST_PORT` (default `127.0.0.1:8100`, localhost-only — see "Known Gaps", this is *not yet* reachable from the local network the operator asked for). No CORS middleware.
 
 | Method & path | Body | Behavior |
 | --- | --- | --- |
 | `GET /api/v1/health` | — | `{"status": "ok"}` liveness. |
-| `GET /api/v1/ready` | — | `{"status": "ok"\|"degraded", "problems": [...]}` — checks `ASSET_OPS_SCRIPTS_DIR` exists, `MCP_TRANSPORT=stdio`, and `passkey` is on `PATH`. |
-| `POST /api/v1/runs` | `application/json {"text": "..."}` **or** `multipart/form-data` with a `file` field (CSV) | Runs the preprocessor; `400 VALIDATION_ERROR` on zero identities; otherwise `202` with the run summary and kicks off `asset_ops`/`device_lookup` as an asyncio background task. |
-| `GET /api/v1/runs/{run_id}` | — | Run summary; `result` is the `chat.csv_preview` or `chat.device_card` object once terminal, else `null`. `404` for an unknown id. |
+| `GET /api/v1/ready` | — | `{"status": "ok"\|"degraded", "problems": [...]}` — checks `ASSET_OPS_SCRIPTS_DIR`, `CLAUDE_CONFIG_PATH`, `MCP_TRANSPORT=stdio`, `passkey` on `PATH`. |
+| `POST /api/v1/runs` | `application/json {"text": "...", "thread_id": "..."}` **or** `multipart/form-data` (`file`, `text`, `thread_id`) | `400 VALIDATION_ERROR` only if both text and file are empty; otherwise `202` with the run summary. Generates a new `thread_id` if none was given. Kicks off `chat.run_chat_turn` as an asyncio background task. |
+| `GET /api/v1/runs/{run_id}` | — | Run summary; `result` is `{"type": "chat.text", "text": "..."}` once terminal, else `null`. `404` for an unknown id. |
 
-Run summary shape: `id`, `correlation_id`, `skill_id`, `intent_id`, `mode`, `input_kind`, `input_count`, `status` (`queued`/`running`/`partial`/`completed`/`failed`), `created_at`, `updated_at`, `result`, `error`, `diagnostic`. No SSE/WebSocket in this MVP — the client polls `GET /runs/{id}` (this is a deliberate minimum-scope choice; see Open Questions).
+Run summary shape: `id`, `correlation_id`, `thread_id`, `input_kind`, `status` (`queued`/`running`/`completed`/`failed` — `partial`/`rejected` are gone, there is no longer a structured result type that has a "partial" concept; a tool-call failure is just narrated by the model in its text), `created_at`, `updated_at`, `result`, `error`, `diagnostic`, `activity` (new — `list[str]`, live progress lines, see "Live Activity Feed"; empty until the run leaves `queued`).
 
-## Live Smoke Test (Ran on This Machine 2026-08-29 and 2026-08-30)
-
-This machine has real `passkey` (`servicenow`/`jamf_api`/`intune`) profiles and a real `passkey` binary on `PATH`, so the `asset_ops` path was smoke-tested against **live** ServiceNow/Jamf/Intune, not just mocked subprocess calls:
+## Live Smoke Test (2026-08-31)
 
 ```bash
-cd session-host && uv sync
-uv run python -m fleet_session_host &          # background, port 8100
-curl -s -X POST http://127.0.0.1:8100/api/v1/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"look up these users devices\n<username1>\n<username2>\n<username3>\n<username4>"}'
-# -> 202 {"mode":"asset_ops","input_count":4,...}
-curl -s http://127.0.0.1:8100/api/v1/runs/<id>
-# -> status "completed", chat.csv_preview with real Not-Found-in-SN and a real Intune-managed
-#    Windows device (serial, model, asset tag, last check-in) returned through the actual
-#    asset_report_build.py -> asset_report_mdm.py pipeline
+curl -s -X POST http://127.0.0.1:8100/api/v1/runs -H 'Content-Type: application/json' \
+  -d '{"text":"hey, what can you help me with?"}'
+# -> completed in 13s, self-described its own MCP tool surface accurately (device/asset lookups,
+#    bulk reporting, ticketing/docs, vuln data) -- not a canned string, model-generated from the
+#    actual attached tool list.
+
+curl -s -X POST http://127.0.0.1:8100/api/v1/runs -H 'Content-Type: application/json' \
+  -d '{"text":"look up nick.sanchez"}'
+# -> completed in 32.1s (first lookup, no cache -- see "Known Gaps", the identifier cache from the
+#    prior pass was device_lookup.py-specific and did not carry over). Real ServiceNow profile,
+#    real Jamf devices, real Intune (0 devices, correctly explained as "all his hardware is
+#    Apple/Jamf-managed"), and unprompted: flagged that one Jamf serial did not match the
+#    corresponding ServiceNow asset record and asked whether to dig into it -- richer than the old
+#    fixed device_lookup skill ever produced.
+
+# Two-turn conversation in the same thread_id:
+curl -s -X POST .../runs -d '{"text":"My name is Nick and my favorite fleet tool is Jamf. Remember that."}'
+# thread_id: 876d56b3-...
+curl -s -X POST .../runs -d '{"text":"What is my name and my favorite fleet tool?","thread_id":"876d56b3-..."}'
+# -> "Your name is Nick, and your favorite fleet tool is Jamf." -- confirms context-stuffing memory.
 ```
 
-Also verified: `POST /api/v1/runs` with a CSV upload (`multipart/form-data`, `Username` header, 1 row) completed the same pipeline end to end; a 4-identity name-list run and a 10-identity name-list run (real, randomly-sampled active ServiceNow usernames) both bound `asset_ops` correctly and completed with real per-device Jamf/Intune enrichment, including a `truncated: true` result once row count exceeded the 10-row preview cap; `GET /api/v1/health` and `/ready` responded correctly.
+`GET /api/v1/ready` returned `{"status":"ok","problems":[]}` throughout — `claude_config_path` resolved to the operator's real `~/.claude.json` with no manual copy step needed (unlike the old `mcp.stdio.json`, which required hand-copying 3 servers' credentials).
 
-**`device_lookup` round (2026-08-30), once the operator supplied real config:** `session-host/config/mcp.stdio.json` was filled in with the real `jamf`/`intune`/`servicenow` stdio `command`/`args`/`env` copied verbatim from the operator's own Claude Code config (`~/.claude.json`, which already had these three servers fully configured with real credentials), and `.env` was filled in with a real `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`LITELLM_MODEL`. The first live run (a single macOS serial) failed with `Reached maximum number of turns (6)`; a debug transcript capture (`sdk.query()` message-by-message) showed the real root causes documented in "Known Gaps" below. After both code fixes:
+## Tests
 
-- A single macOS serial (`snow`-free path) completed successfully — real Jamf data (model, OS version, last check-in, compliance detail, assigned user) rendered as a `chat.device_card` summary.
-- A username with three assigned devices (ServiceNow department/manager/last-login profile, one primary Jamf device with compliance detail, correctly not fanning out to the other two ServiceNow-listed assets) also completed successfully in a single conversational summary — confirming the skill's "one identifier, primary device only" scope holds even when ServiceNow reports multiple assets.
+`session-host/tests/` — 31 tests, `uv run pytest -q` → `31 passed`, no live vendor calls:
 
-Real output (usernames, serials, asset tags, device compliance detail) is **not reproduced in this document** — it is live employee/device data from the operator's ServiceNow/Jamf/Intune tenants. The temp/report CSVs this smoke test wrote under `session-host/var/tmp/` and `session-host/var/reports/` were deleted after verification (both directories are git-ignored by `.gitignore` lines 35–38 regardless); `session-host/config/mcp.stdio.json` itself is also git-ignored, so the real credentials copied into it are not committed.
+- `test_chat.py`: missing `LITELLM_MODEL`/`ANTHROPIC_BASE_URL` and missing/empty `CLAUDE_CONFIG_PATH` both return a clear Diagnostic before any SDK import; `_load_mcp_servers` mirrors a real config and skips an entry with no `command` rather than fabricating one; `_render_history` stuffs prior turns correctly and leaves an empty history's prompt unchanged; `DISALLOWED_TOOLS` asserts `Bash`/`Read`/`Write` stay off. **[New]** `_friendly_tool_name`/`_describe_tool_use`/`_describe_tool_result` against fake block objects (no live SDK session needed) covering MCP-namespace unwrapping, the `build_asset_report` special case, and the error/success result lines.
+- `test_runs.py`: `RunStore` thread-history round-trips per `thread_id` (never leaks across threads) and caps at `MAX_HISTORY_TURNS`, dropping the oldest turns first. **[New]** `append_activity` appends while running, is a no-op once a run is terminal (a late progress callback from an already-finished background task must not resurrect its feed), and is a no-op for an unknown run id.
+- `test_api.py`: `_build_prompt` correctly appends a CSV note when a file is present, with or without accompanying text.
+- `test_asset_ops.py`, `test_csv_preview.py`: **unchanged** — `asset_ops.py`/`csv_preview.py` were not touched by this pivot.
+
+## Known Gaps
+
+- **[New, 2026-08-31] Session-resume abandoned in favor of context-stuffing.** The SDK's own `ClaudeAgentOptions.resume` was tried first (pass the prior turn's `ResultMessage.session_id` back in). It failed live, every time, with `"No conversation found with session ID: ..."` even though the id round-tripped correctly — this depends on Anthropic's own server-side session persistence, which the operator's third-party LiteLLM gateway (`ANTHROPIC_BASE_URL`) does not implement. Switched to rendering prior turns into the prompt text instead (`RunStore.get_thread_history`), which works with any gateway. Trade-off: unbounded prompt growth is capped at 12 turns with no summarization/compaction — a very long conversation will start losing its earliest context rather than growing forever. Revisit if that becomes a real problem in practice.
+- **[New, 2026-08-31] `setting_sources=[]` silently breaks more than just skill/CLAUDE.md loading.** It was tried first (matching the old `device_lookup.py`'s isolation stance) and also broke session resume before that was abandoned for the reason above — bare `[]` is "full SDK isolation mode," which turned out to also suppress the CLI's own session transcript persistence. Not currently load-bearing now that resume isn't used, but left as `["project"]` rather than reverted to `[]`, since this repo has no `.claude/settings.json`/`CLAUDE.md` for `"project"` to actually load (verified) — it is a no-op today, kept only because `[]` has a broader, surprising blast radius than its name suggests.
+- **[Regression, 2026-08-31] The `device_lookup.py` 5-minute identifier cache is gone.** It was specific to that module's `run_device_lookup(identifier, ...)` signature and had no equivalent to key off in a general chat turn (`run_chat_turn(prompt, ...)` takes free-form text, not a canonicalized identifier) — it was not ported, not an oversight. A repeat "look up nick.sanchez" today re-runs the full ~30-45s agent session again, same as a first lookup — **[Mitigated same day]** the UI now shows a live per-tool-call activity feed instead of a static spinner during that wait (see "Live Activity Feed"), which addressed the operator's actual complaint ("it's static while looking up... it should be fine [on raw speed]"), but the underlying latency itself is unchanged. Caching general chat turns would need a different design (e.g. detect + canonicalize an identifier out of free text, same as the old preprocessor did) — still flagged as an Open Question, not solved in this pass.
+- **[Not done, 2026-08-31] Still bound to `127.0.0.1` — not actually reachable from the local network yet.** The operator's stated audience was "colleagues on the same network," but `SESSION_HOST_HOST` still defaults to `127.0.0.1` and there is still no CORS middleware. Making this genuinely reachable by another machine needs: (a) binding to `0.0.0.0` (or the host's LAN IP) behind a firewall rule, (b) a real CORS policy or a reverse proxy that puts the frontend and API on the same origin for every client machine (the current Vite-dev-proxy trick only works for whoever is running the dev server locally), and (c) revisiting "no access control" once it's actually exposed beyond one operator's own browser. This is a Deliver-phase (`@devops.eng`, `deploy.md`) decision, not a drive-by change to `api.py` — flagged, not built.
+- **Deliberately not wired: raw Bash + the operator's personal `docs/.claude/skills/*`/`~/.claude/skills/*`.** See `chat.py`'s "Why raw Bash/filesystem tools are withheld" above. Revisit only on an explicit operator decision.
+- No SSE/WebSocket progress stream; clients poll `GET /runs/{id}` (unchanged from the prior pass).
+- Session/run records are process-memory only; a host restart loses in-flight run status and all thread history (unchanged).
+- No rate limiting, no per-actor auth — matches the operator's explicit "none for now" answer, but is materially riskier now that the chat has 13 real MCP servers attached and no auth than it was with 3 narrow, read-mostly tools.
 
 ## Env Table
-
-Names only, from `.env.example` (already present; none added or renamed):
 
 | Name | Used by |
 | --- | --- |
 | `AAMAD_TARGET_RUNTIME` | Resolved runtime marker (`claude-agent-sdk`). |
-| `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `LITELLM_MODEL` | `device_lookup.py` → `ClaudeAgentOptions` (LiteLLM Anthropic-compatible proxy; never a raw Anthropic key). |
-| `SESSION_HOST_HOST`, `SESSION_HOST_PORT` | `__main__.py` → uvicorn bind (default `127.0.0.1:8100`). |
-| `ASSET_OPS_SCRIPTS_DIR` | `asset_ops.py` → absolute paths to `asset_report_build.py` / `asset_report_mdm.py`. |
-| `SESSION_TMP_DIR` | `asset_ops.py` → temp username/upload CSVs. |
-| `SESSION_REPORTS_DIR` | `asset_ops.py` / `csv_preview.py` → result CSVs backing `chat.csv_preview`. |
-| `MCP_TRANSPORT` | Must be `stdio`; `settings.check_skeleton()` flags anything else. |
-| `MCP_SERVERS_CONFIG` | `mcp_config.py` → operator-filled `session-host/config/mcp.stdio.json`. |
-| `SNOW_HOST`, `SNOW_USERNAME`, `SNOW_PASSWORD` | Injected by `passkey run servicenow`; the session host never reads these directly. |
-| `JAMF_BASE_URL`, `JAMF_CLIENT_ID`, `JAMF_CLIENT_SECRET` | Injected by `passkey run jamf_api`. |
-| `INTUNE_TENANT_ID`, `INTUNE_CLIENT_ID`, `INTUNE_CLIENT_SECRET` | Injected by `passkey run intune`. |
-
-No `DATABASE_URL`, `REDIS_URL`, `OIDC_*`, `CREWAI_*`, or MCP HTTP URL was added — none of those exist in `.env.example` and none were invented here.
-
-## Tests
-
-`session-host/tests/` — 25 tests, `uv run pytest -q` → `25 passed`, no live vendor calls:
-
-- `test_preprocessor.py`: the example request (4 names + "look up these users devices") binds `asset_ops`, `input_count=4`; a single serial/username with no list binds `device_lookup`; any CSV binds `asset_ops` even with accompanying single-name text; zero identities is rejected before any connector call; emails dedupe against bare usernames; 50 names use the same route as 4; vuln-phrasing detection.
-- `test_asset_ops.py`: fixed argv for both passkey steps (`subprocess.run` mocked); the identity list never appears on any argv or in the model-facing stdout summary (only in the temp CSV file); missing `passkey` returns a Diagnostic **without calling `subprocess.run` at all**; a step-2 failure still returns `partial` with the step-1 rows; CSV upload is passed through byte-for-byte and `input_count` dedupes by email domain; missing scripts directory returns a Diagnostic.
-- `test_csv_preview.py`: exact 12-column header and `chat.csv_preview` schema; 10-row preview cap and `truncated` flag on 15 rows; missing MDM columns padded to `""`; exactly 10 rows is not truncated.
-- `test_device_lookup.py`: vulnerability phrasing short-circuits before any MCP/SDK involvement; missing `MCP_SERVERS_CONFIG` and placeholder `<OPERATOR_SUPPLY>` config both return a clear Diagnostic; `ALLOWED_TOOLS` matches `device-lookup/SKILL.md` exactly.
-- `test_mcp_config.py`: missing file, the real example placeholder file, and a fully filled-in config are classified correctly.
-
-`docs/.claude/skills/asset-ops/scripts/tests/*` (the skill pack's own script tests) were not touched and were not run as part of this change — they test the scripts directly, not the host wrapper.
-
-## Known Gaps
-
-- **[Fixed, found live 2026-08-30] MCP tool naming.** `docs/.claude/skills/device-lookup/SKILL.md` names the three tools with bare names (`jamf_get_device_summary`, `intune_lookup_device`, `snow_lookup_user_profile`). The Claude Code CLI actually registers MCP tools as `mcp__<server>__<tool>`. `ALLOWED_TOOLS` and the `PreToolUse` hook were built against the bare names and consequently **denied the real tool call every time** — confirmed via a live debug-transcript capture showing the model calling `mcp__jamf__jamf_get_device_summary` and the hook rejecting it as "not in the allowlist". Fixed by using the prefixed names throughout `device_lookup.py`; `test_device_lookup.py::test_allowed_tools_matches_device_lookup_skill` updated to match.
-- **[Fixed, found live 2026-08-30] Unintended MCP/settings leakage.** `ClaudeAgentOptions` defaults (`strict_mcp_config=False`, `setting_sources=None` → CLI default `["user","project"]`) let the bundled Claude Code CLI merge in the operator's entire personal `~/.claude.json` (10+ other MCP servers) on top of the 3 servers passed programmatically, directly contradicting this module's stated design ("the model cannot expand its own tool access"). Fixed by setting `strict_mcp_config=True` and `setting_sources=[]`.
-- Even after both fixes, a single-device serial lookup completed in exactly `num_turns=6` (the model spends 1-2 turns on a denied `ToolSearch` exploration attempt, plus occasional tool-argument-name retries, before calling the right tool correctly) — `max_turns` was raised to `10` to give headroom for a multi-device username; this is an observed behavior of the current model/CLI combination, not a hard guarantee, and should be re-checked if the model or CLI version changes.
-- Asset-ops optional step 1.5 (ServiceNow-gap MCP fill via `jamf_get_user_devices`/`intune_lookup_users`) is **not implemented** — it is optional and not the default for this skill (SAD §2.1/§2.8); flagged here rather than built.
-- `asset_report_app.py` (app health), `jamf_group_sync.py` (write), Cortex, and Tenable are intentionally not wired into this skill, per the task's "Do not build" list.
-- No SSE/WebSocket progress stream; clients poll `GET /runs/{id}`. Acceptable for this MVP's minimum-API scope, but means "first progress within 10s" (SAD §2.7) is only observable via polling cadence, not a push event.
-- Session/run records are process-memory only; a host restart loses in-flight run status (matches "session files are the retention" — SAD §2.4).
-- No automated test drives the Starlette HTTP layer end to end (`api.py`); it was verified manually (see Live Smoke Test) rather than via an automated integration test, to avoid adding `httpx`/`TestClient` as an undeclared test dependency. `starlette`/`uvicorn`/`python-multipart` were added as **explicit** dependencies; a future QA pass could add `httpx` as a declared dev dependency for real endpoint tests.
-- No rate limiting, no per-actor auth beyond the private bind — matches "not an open proxy" but is not a full authorization model (Future Work per SAD §8.2).
+| `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `LITELLM_MODEL` | `chat.py` → `ClaudeAgentOptions` (LiteLLM Anthropic-compatible proxy). |
+| `CLAUDE_CONFIG_PATH` | **New.** `chat.py` → operator's Claude Code config (default `~/.claude.json`); source of every MCP server attached to the general chat session. |
+| `SESSION_HOST_HOST`, `SESSION_HOST_PORT` | `__main__.py` → uvicorn bind (default `127.0.0.1:8100` — see "Known Gaps" re: LAN reachability). |
+| `ASSET_OPS_SCRIPTS_DIR` | `asset_ops.py` (unchanged) → `build_asset_report` tool's underlying scripts. |
+| `SESSION_TMP_DIR`, `SESSION_REPORTS_DIR` | `asset_ops.py` / `csv_preview.py` (unchanged). |
+| `MCP_TRANSPORT`, `MCP_SERVERS_CONFIG` | Legacy — no longer read by `chat.py` (which reads `CLAUDE_CONFIG_PATH` instead); `MCP_TRANSPORT` is still checked by `settings.check_skeleton()` for the `asset_ops` path's own assumptions. `session-host/config/mcp.stdio.json` is no longer required. |
+| `SNOW_*`, `JAMF_*`, `INTUNE_*` | Injected by `passkey run <profile>`; unchanged. |
 
 ## Sources
 
-- `project-context/2.build/setup.md` (folder layout, env names, ports, handoff — authoritative for conflicts on folders/env/ports)
-- `project-context/1.define/sad.md` §1–§2, §6.4, Implementation Guidance
-- `project-context/1.define/architecture-fork.md` §6–§7
-- `project-context/1.define/prd.md` FR-1, FR-2, FR-3, FR-10, US-8
-- `project-context/1.define/sfs/lookup-user-devices.md`
-- `docs/.claude/skills/asset-ops/SKILL.md`
-- `docs/.claude/skills/device-lookup/SKILL.md`
-- `aamad.config.yml`, `.cursor/rules/adapter-claude-agent-sdk.mdc`
-- `.env.example`, `session-host/config/mcp.stdio.example.json`
-- Live `passkey`/ServiceNow/Jamf/Intune smoke test on this machine, 2026-08-29 (`asset_ops`) and 2026-08-30 (`device_lookup`, see above)
+- Operator direction, 2026-08-31: "all i want is my claude skills workflow available to others without them having to setup a developer environment... it should be like claude but with all my skills and mcp tools attached already," plus follow-up answers (local-network audience, all MCP tools, general chat UI, no access control).
+- The operator's own `~/.claude.json` (13 MCP servers) and `docs/.claude/skills/*`/`~/.claude/skills/*` SKILL.md files (read live to determine what "all my skills" safely means — see "Known Gaps").
+- `claude_agent_sdk` installed package source (`types.py`, `query.py`, `__init__.py`) — read directly to confirm `resume`/`setting_sources`/`skills`/`tool`/`create_sdk_mcp_server` semantics, since this pivot's design depends on exact SDK behavior that live-testing then partially contradicted (see "Known Gaps").
+- Prior `backend.md` (2026-08-29/30 record, preserved below for history).
 
 ## Assumptions
 
-- No conflicts arose between `setup.md` and the SAD/PRD/SFS — `setup.md`'s folder layout, env names, and port (`8100`) match the SAD/PRD's session-host description exactly, so no "setup.md wins" override was needed.
-- `chat.csv_preview.preview_rows` is a list of objects keyed by header name (the SAD/PRD JSON examples left this implicit — only `[]` was shown). A future frontend consumer should treat this as the contract unless the operator specifies list-of-lists instead.
-- `filename`/`file_ref` use `devices-<run_id>.csv` (no separate "session id" concept exists yet — one HTTP request is one run is one session, consistent with the SAD's own open question about session/run identity).
-- The instruction-stopword list in `preprocessor.py` is a pragmatic heuristic tuned to the example request and this skill's phrasing, not a general NLP intent classifier; it is expected to need iteration as real phrasing is observed (flagged for `@qa.eng`).
-- `sys.executable` (the session host's own interpreter) is sufficient to run the asset-ops scripts because they only need `pandas`/`requests`/stdlib, which are already session-host dependencies; the scripts' own docs assume a separate `~/work/.venv`, which does not exist in this repository layout and was not recreated.
-- ~~`device_lookup`'s exact MCP tool naming... remains unconfirmed~~ — **resolved 2026-08-30**: confirmed live to be `mcp__<server>__<tool>`-prefixed; see Known Gaps.
-- Adding `starlette`, `uvicorn`, and `python-multipart` as explicit `session-host/pyproject.toml` dependencies (previously only transitive via `claude-agent-sdk`) is within `@backend.eng`'s scope (implementing the HTTP API) and does not violate "no FastAPI/CrewAI adapters" — these are a generic ASGI stack, not a reimplementation of SN/Jamf/Intune.
+- "All my skills" was interpreted as *this repo's own two implemented capabilities* (device lookup via MCP, asset reporting via `asset_ops.py`), not literally every personal Claude Code skill on the operator's laptop — see `chat.py`'s docstring and "Known Gaps" for the specific, live-discovered reason (destructive Jamf write, personal-workspace-only paths that do not exist on this host). Flagged loudly to the operator before implementation; not overridden.
+- `setting_sources=["project"]` is safe today because this repo has no `.claude/settings.json`/`CLAUDE.md` (verified) — if one is ever added, re-check that it does not unexpectedly change chat behavior.
+- The 12-turn history cap and full-transcript context-stuffing is an MVP-level choice, not a production memory architecture — no summarization, no token-budget-aware truncation.
 
 ## Open Questions
 
-1. ~~**Live MCP stdio config**~~ — **resolved 2026-08-30**: `session-host/config/mcp.stdio.json` now has real `command`/`args`/`env` for `jamf`, `intune`, `servicenow`, copied from the operator's `~/.claude.json`.
-2. ~~**LiteLLM gateway values**~~ — **resolved 2026-08-30**: the operator supplied a real `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`LITELLM_MODEL` in `.env`.
-3. ~~Exact MCP tool naming convention~~ — **resolved 2026-08-30**: confirmed `mcp__<server>__<tool>`-prefixed; see Known Gaps.
-4. Whether asset-ops optional step 1.5 (ServiceNow-gap MCP fill) should be added to this skill's default path, or stays operator-invoked only (SAD/PRD leave this open).
-5. Session/run retention and multi-user isolation on a shared host — still open at the SAD level; this implementation keeps records in a single process's memory with no eviction policy.
-6. Whether a future iteration should add an SSE/WebSocket progress stream, given SAD §2.7's "first progress within 10 seconds" target is easier to demonstrate with push events than polling.
-7. `max_turns=10` for `device_lookup` is an empirically-chosen number based on a handful of live runs on one model/CLI version, not a formal budget derived from the SKILL.md tool matrix — worth revisiting if turn-exhaustion Diagnostics recur in practice.
+1. **First-lookup (and now every-lookup) latency is unaddressed.** The old cache mitigated repeats; this pivot has no cache at all. Worth a follow-up decision on whether/how to cache general chat turns.
+2. **LAN reachability is not built** — see "Known Gaps." This needs a `@devops.eng`/`deploy.md` pass (host bind, CORS or reverse proxy, and a real look at "no access control" once other machines can reach it).
+3. Whether to widen the tool surface to include the operator's personal `docs/.claude/skills/*` (with or without the destructive Jamf-replace script specifically excluded) is an explicit operator decision, not resolved here.
+4. Conversation memory has no eviction/summarization strategy beyond a flat 12-turn cap — revisit if real usage produces long threads that lose useful early context.
 
 ## Audit
 
-- **Timestamp:** 2026-08-29 (initial build), 2026-08-30 (device_lookup live-tested, two bugs fixed)
+- **Timestamp:** 2026-08-31
+- **Persona id:** `backend-eng` (pivot; superseding the 2026-08-29/30 mode-router build below)
+- **Actions:** operator-directed product pivot ("like Claude, all skills/MCP attached, no dev-environment setup"), `develop-be`, `document-backend`
+- **Resolved runtime:** `AAMAD_TARGET_RUNTIME=claude-agent-sdk` (unchanged)
+- **What was done:** deleted `preprocessor.py`/`mcp_config.py`/`device_lookup.py` and their tests; added `chat.py` (general session, full MCP parity via `CLAUDE_CONFIG_PATH`, `build_asset_report` custom tool, history-stuffing); reworked `runs.py` (`thread_id`, `RunStore` history instead of `mode`/`skill_id`/`intent_id`); rewrote `api.py` (dropped the validation-gate/mode dispatch, added `thread_id` threading); added `test_chat.py`/`test_runs.py`/`test_api.py`; ran `uv run pytest` (22 passed); live-tested against the real running host (general chat, real `nick.sanchez` lookup, two-turn memory) — see "Live Smoke Test."
+- **Runtime library versions:** unchanged from the prior pass (`claude-agent-sdk`, `starlette`, `uvicorn`, `python-multipart`, `pandas`, `pyyaml`, `requests`, `pytest`) — no new dependency added.
+- **Prompt Trace:** `CHAT_SYSTEM_PROMPT` constant in `chat.py`; live user prompts used in testing: "hey, what can you help me with?", "look up nick.sanchez", and a two-turn name/tool-preference exchange (see "Live Smoke Test") — no separate trace log persisted.
+- **Security:** no secret values written to any tracked file; `~/.claude.json` is read (not copied) directly from the operator's home directory at runtime, so no credentials were duplicated into this repo (unlike the old `mcp.stdio.json` copy step); real employee/device data returned during the `nick.sanchez` live test was not persisted anywhere and is not reproduced in this document beyond field names.
+
+### Follow-up Audit — same day, live activity feed
+
+- **Timestamp:** 2026-08-31 (later same day)
 - **Persona id:** `backend-eng`
-- **Actions:** `develop-be`, `document-backend`
-- **Resolved runtime:** `AAMAD_TARGET_RUNTIME=claude-agent-sdk` (from `aamad.config.yml`)
-- **Runtime library versions:** `claude-agent-sdk==0.2.148` (live-invoked 2026-08-30), `starlette==1.6.0`, `uvicorn==0.52.4`, `python-multipart==0.0.32`, `pandas==2.3.3`, `pyyaml==6.0.3`, `requests==2.34.2`, `pytest==8.4.2`
-- **LiteLLM / model names (no secrets):** `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` (LiteLLM key name only), `model=LITELLM_MODEL` — operator supplied real values in `.env` on 2026-08-30; a real model call occurred during live testing (see Live Smoke Test)
-- **MCP transport:** `MCP_TRANSPORT=stdio` (only transport implemented; HTTP MCP was not built); `strict_mcp_config=True`/`setting_sources=[]` added 2026-08-30 to prevent the CLI from merging in the operator's personal MCP/settings config
-- **Temperature / max_tokens:** not set explicitly (SDK/CLI defaults); `max_turns` raised from `6` to `10` on 2026-08-30 based on live turn-count observations
-- **Prompt Trace:** the two `device_lookup` system prompts used in live testing are the `DEVICE_LOOKUP_SYSTEM_PROMPT` constant in `device_lookup.py` (unchanged) with user prompt = the bare identifier (`Y76N6GF94G`, then a real username) — no separate trace log was persisted; the debug transcript that surfaced the two bugs was captured to a throwaway script (`/tmp/fr_debug_device_lookup.py`) and deleted after use, not committed
-- **Tool usage:** read PRD/SAD/architecture-fork/SFS/setup.md/skill packs/adapter rule/`.env.example`/`mcp.stdio.example.json`; ran `uv sync` / `uv lock` in `session-host/`; wrote `session-host/fleet_session_host/*`, `session-host/tests/*`, updated `session-host/pyproject.toml`, `session-host/requirements.txt`, `session-host/uv.lock`; ran `uv run pytest` (25 passed); ran live manual smoke tests of the running host against real `passkey`-backed ServiceNow/Jamf/Intune (both `asset_ops` and, on 2026-08-30, `device_lookup`), then deleted the resulting (git-ignored) temp/report CSVs containing real employee data; on 2026-08-30, edited `device_lookup.py` (tool names, `strict_mcp_config`/`setting_sources`, `max_turns`) in response to live findings and updated `test_device_lookup.py` accordingly (25 tests still pass)
-- **Security:** no secret values written to any tracked/committed file; `session-host/config/mcp.stdio.json` was filled in with real credentials copied from the operator's own `~/.claude.json` on 2026-08-30, but that file is git-ignored (`.gitignore` lines 39-40) and was never printed in full (only key presence/length was ever checked, never values); real employee/device data produced during both live smoke tests was not committed and was deleted from `session-host/var/tmp`/`session-host/var/reports` after each verification
+- **Actions:** operator feedback ("it's static while looking up... with claude, at least you can see it thinking"), `develop-be`, `document-backend`
+- **What was done:** added `Run.activity`/`RunStore.append_activity` (`runs.py`); added `on_progress` callback to `run_chat_turn` plus `_friendly_tool_name`/`_describe_tool_use`/`_describe_tool_result` helpers, replacing the old duck-typed `getattr(..., "text", None)` loop with `isinstance` checks against `AssistantMessage`/`UserMessage`/`ToolUseBlock`/`ToolResultBlock`/`TextBlock` (`chat.py`); wired the callback in `api.py`'s `_process_chat_turn`, seeding `"Connecting to the session..."` on the `running` transition; added 9 unit tests (`uv run pytest -q` → 31 passed); live-tested against the running host with a real `nick.sanchez` lookup, confirming the feed narrates tool calls (`servicenow -> snow_lookup_user_profile`, `jamf -> jamf_get_user_devices`, `intune -> intune_lookup_users`, run in parallel) and results in real time — see "Live Activity Feed."
+- **No new dependency, no API route change** — `activity` is an additive field on the existing `GET /runs/{id}` response.
+- **Security:** activity lines are short, human-authored descriptions of tool *names* only (never tool inputs/outputs), so no vendor data (ServiceNow/Jamf/Intune records) is echoed into the progress feed — only the final `result.text` carries retrieved data, unchanged from before.
+
+---
+
+*The 2026-08-29/30 mode-router record (device_lookup + asset_ops preprocessor split) that this document superseded has been removed from this file to keep it navigable; recover it from git history (`git log -p -- project-context/2.build/backend.md`) if needed for the full prior implementation detail (MCP tool-naming fix, `strict_mcp_config` fix, `max_turns` tuning, the original live smoke test against `mcp.stdio.json`).*

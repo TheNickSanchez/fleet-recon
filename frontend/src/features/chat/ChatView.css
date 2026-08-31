@@ -80,7 +80,7 @@
 
 .chat__suggestions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--s-3);
   margin-top: var(--s-8);
   text-align: left;
@@ -123,6 +123,12 @@
   color: var(--fg-tertiary);
 }
 
+.chat__disclosure {
+  margin-top: var(--s-8);
+  font-size: var(--text-2xs);
+  color: var(--fg-quaternary);
+}
+
 /* ---- Canvas side panel ---- */
 .chat__canvas {
   flex: none;
@@ -144,12 +150,6 @@
 @media (max-width: 1200px) {
   .chat__canvas {
     width: 380px;
-  }
-}
-
-@media (max-width: 1000px) {
-  .chat__canvas {
-    display: none;
   }
 }
 

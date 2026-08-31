@@ -1,14 +1,35 @@
 # Fleet Recon — Frontend
 
-React 19 + TypeScript + Vite client for the Fleet Recon endpoint-reconciliation workspace.
+React 19 + TypeScript + Vite general chat client for the Fleet Recon session host.
+
+Product pivot 2026-08-31: this is a general chat interface — "Claude, but with your Claude Code
+skills and MCP tools already attached." There is no mode router (device lookup vs. batch report)
+anymore; every message is one turn of one conversation. See
+[`project-context/2.build/backend.md`](../project-context/2.build/backend.md) and
+[`project-context/2.build/frontend.md`](../project-context/2.build/frontend.md) for the full
+contract and design rationale.
 
 ## Quick start
 
-```bash
-# 1. Start the API (separate terminal, from the repository root)
-cd backend && uv run uvicorn backend.main:app --reload --port 8000
+The easiest way to run both services for a local demo is the one-command launcher from the
+repository root:
 
-# 2. Start the frontend
+```bash
+./scripts/dev.sh
+```
+
+It starts the session host, waits for it to report healthy, and then starts the frontend dev
+server — `Ctrl+C` stops both. It expects a repo-root `.env` (copy `.env.example` first) with
+`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `LITELLM_MODEL` filled in.
+
+To run the two services by hand instead:
+
+```bash
+# Terminal 1, from the repository root
+cd session-host && uv run python -m fleet_session_host
+# Listens on 127.0.0.1:8100
+
+# Terminal 2
 cd frontend
 npm install
 cp .env.example .env.local
@@ -17,9 +38,11 @@ npm run dev
 
 Open <http://localhost:5173>.
 
-> The dev server proxies `/api` to the backend. The MVP API sends no CORS headers, so the
-> browser must stay same-origin — keep `VITE_API_BASE_URL` as the relative `/api/v1` unless
-> you are pointing at a CORS-enabled deployment.
+> The dev server proxies `/api` to the session host. It sends no CORS headers, so the browser
+> must stay same-origin — keep `VITE_API_BASE_URL` as the relative `/api/v1` unless you put the
+> host behind a CORS-enabled reverse proxy. This means the app is only reachable from the machine
+> running the dev server — see `backend.md`'s Known Gaps if you need it reachable from other
+> machines on the network.
 
 ## Scripts
 
@@ -37,65 +60,59 @@ Copy `.env.example` to `.env.local` and adjust. `.env.local` is git-ignored.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | `/api/v1` | API base path the browser calls |
-| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:8000` | Where the dev server forwards `/api` |
+| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:8100` | Where the dev server forwards `/api` |
 | `VITE_PORT` | `5173` | Dev/preview port |
-| `VITE_DEV_ROLE` | `workspace_user` | Initial simulated role |
-| `VITE_DEV_ACTOR_ID` | `local-dev-user` | `X-Actor-Id` header value |
-| `VITE_WORKSPACE_ID` | `550e8400-…0000` | Workspace opened by default |
 
-**The role switcher is a development affordance.** It sets the `X-Role` header the MVP backend
-reads in place of verified OIDC claims. Hiding a route in the client is not an authorization
-control — the server enforces access on every request. This must be replaced with a real token
-exchange before any non-local deployment.
+There is no dev-role/actor/workspace configuration and no authentication. The session host is a
+private bind with no per-actor identity at all — access control is "run this only where it should
+be reachable," not a client-presentable claim.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `⌘K` / `Ctrl+K` | Command palette |
-| `⌘B` / `Ctrl+B` | Collapse or expand navigation |
-| `⌘\` / `Ctrl+\` | Show or hide the canvas panel |
 | `Enter` | Send the composer message |
 | `Shift`+`Enter` | New line in the composer |
-| `Esc` | Dismiss palette, menu, or dialog |
+| `Esc` | Dismiss the attach menu |
 
 ## Using it
 
-1. **Paste or type usernames** in the composer. There is no mode to pick — the composer detects
-   whether input is typed or pasted, shows how many identifiers it found, and previews whether the
-   run routes to the micro-query or batch path.
-2. **Upload a CSV** from the `+` menu or by dropping it on the composer. It needs a `username`
-   column, at most 10,000 rows, and under 5 MiB.
-3. **Work the canvas.** Accepted identifiers become rows. Filter them, select some, and choose
-   *Request action* to create a scoped remediation request.
-4. **Confirm and execute** from Administration → Action Requests. Requests expire 15 minutes after
-   creation and cannot execute without a matching unexpired confirmation.
-
-Switch to Administrator from the account menu to reach the Administration section.
+1. **Ask anything.** There's no identity-count routing anymore — a general question, a device
+   lookup, a request to search a ticket system, whatever your attached MCP tools support all go
+   through the same composer and the same conversation.
+2. **Attach a CSV** (`+` menu or drag-and-drop, under 5 MiB) alongside a note, or on its own. The
+   model decides whether to call the asset-report tool on it.
+3. **Conversations remember context.** Follow-up messages in the same session thread into the same
+   backend conversation — you don't need to re-state what you already told it.
+4. **Responses are markdown**, rendered with headings, lists, tables, and inline code — not raw
+   text.
+5. **"New chat"** in the toolbar clears the local timeline and starts a fresh backend conversation
+   (no shared memory with the old thread).
 
 ## Structure
 
 ```text
 src/
-  app/          Shell, routing, session context, sidebar, top bar
-  components/   Icon, Menu, Modal, Toast, CommandPalette
+  app/          Shell, app-wide state (theme/thread), top bar
+  components/   Icon, Menu, Toast
   features/
-    chat/       Composer, message timeline, input parsing
-    canvas/     Filterable work-item table
-    actions/    Action request dialog and lifecycle
-    activity/   Session timeline
-    settings/   Tools, credentials, health
-  hooks/        Persistent state, hotkeys, media queries, run polling
+    chat/       Composer, message timeline (markdown rendering), CSV upload guardrails
+  hooks/        Persistent/session state, hotkeys, media queries, run polling
   api/          Typed HTTP client and error normalisation
-  types/        Contracts mirroring backend/schemas.py
+  types/        Contracts mirroring the session host's run/result shapes
   styles/       Design tokens and base primitives
 ```
+
+**Explicitly not present**: workspace routing, an administrator role/claim model, a canvas/
+data-table view, Tools/Credentials settings screens, Action Requests (create/confirm/execute), and
+a `/health` diagnostics screen. None of those have a backing route on this backend.
 
 ## Styling
 
 All colour, spacing, type, radius, elevation, and motion values live in `src/styles/tokens.css`.
 Light and dark themes are token overrides on `[data-theme]`; no component stylesheet contains a
-literal colour.
+literal colour. Visual direction: modern-minimal-saas (generous whitespace, restrained color, one
+accent), per `aamad.config.yml`'s `ui:` block.
 
 `src/main.tsx` imports `tokens.css` and `base.css` **before** any feature module. Vite emits CSS in
 import-evaluation order and base primitives share single-class specificity with component rules, so
@@ -103,20 +120,33 @@ importing them last silently overrides component styling.
 
 ## Known backend gaps surfaced in the UI
 
-- Runs stay `queued` — there is no orchestration worker yet. Polling stops after 30 seconds and the
-  run card says so.
-- Canvas rows are derived from submitted input; the backend does not persist `CanvasWorkItem` records.
-- Credential management and connector diagnostics have no endpoints, so those views are inert and
-  document what they need rather than faking a working screen.
-- There are no list endpoints for runs or actions, so history is per-browser `localStorage`.
+- No SSE/WebSocket — the client polls `GET /runs/{id}`: fast (every 2.5s) for the first 30 seconds,
+  then slow (every 8s) up to a 2-minute hard stop, so a run that calls several tools in sequence
+  still resolves on its own. Past 2 minutes it stops and explains why rather than spinning forever.
+- A first-time lookup of anything (a device, a person) takes ~30-45s — it's a real multi-turn agent
+  session hitting real vendor APIs, not a cached/instant response. There is currently no cache
+  (the prior narrow `device_lookup` skill had one; it didn't carry over to general chat — see
+  `backend.md`'s Known Gaps). Set demo expectations accordingly, or pre-warm a lookup you plan to
+  show by running it once before the audience is watching.
+- No server-side conversation list or audit log — chat history is derived client-side and kept only
+  in `sessionStorage` (cleared when the tab closes), disclosed as such in the empty state.
+- No authentication — the private bind is the only access control, and the chat session now has 13
+  real MCP tools attached (ServiceNow, Jamf, Intune, Tenable, Atlassian, Slack, Google Workspace).
+- Still `localhost`-only — not reachable from other machines on the network without further work
+  (host bind + CORS). Fine for a single-machine, screen-shared demo; not yet fine for colleagues to
+  open on their own laptops.
 
 ## Troubleshooting
 
-**"Cannot reach the Fleet Recon API"** — the backend is not running, or `VITE_API_PROXY_TARGET`
-points somewhere else. Check `curl http://127.0.0.1:8000/api/v1/health`.
+**"Cannot reach the Fleet Recon session host"** — it isn't running, or `VITE_API_PROXY_TARGET`
+points somewhere else. Check `curl http://127.0.0.1:8100/api/v1/health`.
 
-**403 on an Administration screen** — the simulated role is `workspace_user`. Switch from the
-account menu; the view refetches automatically.
+**`GET /api/v1/ready` reports a problem** — usually `CLAUDE_CONFIG_PATH` (default `~/.claude.json`)
+not found, or `ASSET_OPS_SCRIPTS_DIR` missing. Fix the reported path and restart.
 
-**Stale thread or canvas rows** — history is stored in `localStorage`. Use *Clear* in the chat
-toolbar, or clear site data.
+**A run never leaves "Queued"** — confirm `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`/`LITELLM_MODEL`
+are filled in in the repo-root `.env`; the host returns a `failed` Diagnostic rather than hanging
+once those are set correctly.
+
+**Stale thread** — history is `sessionStorage`-backed on purpose (browser-session-only, no server
+audit log). Use *New chat* in the chat toolbar, or close the tab.

@@ -1,117 +1,84 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Icon } from '../../components/Icon.tsx';
+import { Icon, type IconName } from '../../components/Icon.tsx';
 import { useToast } from '../../components/Toast.tsx';
 import { api, errorMessage } from '../../api/client.ts';
-import { useSession, type ThreadEntry } from '../../app/SessionContext.tsx';
+import { useAppState, type ChatEntry } from '../../app/AppState.tsx';
 import { uuid } from '../../lib/uuid.ts';
-import { CanvasPanel } from '../canvas/CanvasPanel.tsx';
-import { Composer } from './Composer.tsx';
+import { Composer, type ComposerSubmission } from './Composer.tsx';
 import { RunMessage, UserMessage } from './Message.tsx';
 import './ChatView.css';
 
-interface ChatViewProps {
-  canvasOpen: boolean;
-  onOpenCanvas: () => void;
-  onCloseCanvas: () => void;
-}
-
-const SUGGESTIONS = [
+const SUGGESTIONS: { icon: IconName; title: string; body: string; fill: string }[] = [
   {
-    icon: 'user' as const,
-    title: 'Reconcile a single user',
-    body: 'Look up one identity across ServiceNow, Jamf, Intune, and Tenable.',
-    fill: 'a.rivera',
+    icon: 'user',
+    title: 'Look up a device',
+    body: 'Paste a serial, hostname, or username for a full cross-system summary.',
+    fill: 'look up MC5J392AKD',
   },
   {
-    icon: 'users' as const,
-    title: 'Compare a small cohort',
-    body: 'Paste up to five usernames for the low-latency micro-query path.',
-    fill: 'a.rivera\nj.chen\nm.okafor',
+    icon: 'file',
+    title: 'Build an asset report',
+    body: 'Paste several usernames (or upload a CSV) for one report across ServiceNow, Jamf, and Intune.',
+    fill: 'build an asset report for: nina.patel, chris.okonkwo, sam.lee, jordan.nguyen',
   },
   {
-    icon: 'file' as const,
-    title: 'Run a batch reconciliation',
-    body: 'More than five identifiers routes to the deterministic batch pipeline.',
-    fill: 'a.rivera\nj.chen\nm.okafor\ns.patel\nl.dubois\nk.tanaka',
+    icon: 'search',
+    title: 'Ask anything else',
+    body: 'Tickets, Jira issues, Confluence pages, Slack — whatever tools the question needs.',
+    fill: 'what can you help me with?',
   },
 ];
 
-export function ChatView({ canvasOpen, onOpenCanvas, onCloseCanvas }: ChatViewProps) {
-  const { workspaceId, entries, addEntry, updateEntry, clearThread, registerRows } = useSession();
+export function ChatView() {
+  const { entries, addEntry, updateEntry, clearThread, threadId } = useAppState();
   const [busy, setBusy] = useState(false);
   const [seed, setSeed] = useState({ value: '', nonce: 0 });
   const toast = useToast();
-  const navigate = useNavigate();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [entries.length]);
 
-  const submit = useCallback(
-    async (entry: ThreadEntry, send: () => Promise<Awaited<ReturnType<typeof api.createRun>>>) => {
-      addEntry(entry);
+  const handleSubmit = useCallback(
+    async ({ text, file }: ComposerSubmission) => {
+      const entry: ChatEntry = {
+        id: uuid(),
+        createdAt: new Date().toISOString(),
+        prompt: { text, fileName: file?.name },
+      };
       setBusy(true);
       try {
-        const run = await send();
-        updateEntry(entry.id, { run });
-        registerRows(run, entry.prompt.usernames);
-        if (!canvasOpen && run.input_count > 0) onOpenCanvas();
+        const run = await api.createRun({ text, file, threadId });
+        addEntry({ ...entry, run });
       } catch (error) {
-        const message = errorMessage(error);
-        updateEntry(entry.id, { error: message });
-        toast.error('Run could not be created', message);
+        toast.error('Could not reach the session host', errorMessage(error));
       } finally {
         setBusy(false);
       }
     },
-    [addEntry, canvasOpen, onOpenCanvas, registerRows, toast, updateEntry],
-  );
-
-  const handleText = useCallback(
-    (text: string, kind: 'typed' | 'pasted', usernames: string[]) => {
-      const entry: ThreadEntry = {
-        id: uuid(),
-        createdAt: new Date().toISOString(),
-        prompt: { kind, text, usernames },
-      };
-      void submit(entry, () => api.createRun(workspaceId, { input_kind: kind, text }));
-    },
-    [submit, workspaceId],
-  );
-
-  const handleCsv = useCallback(
-    (file: File) => {
-      const entry: ThreadEntry = {
-        id: uuid(),
-        createdAt: new Date().toISOString(),
-        prompt: { kind: 'csv', text: file.name, fileName: file.name, usernames: [] },
-      };
-      void submit(entry, () => api.uploadRun(workspaceId, file));
-    },
-    [submit, workspaceId],
+    [addEntry, threadId, toast],
   );
 
   const empty = entries.length === 0;
 
   return (
     <div className="chat-layout">
-      <section className="chat" aria-label="Copilot chat">
+      <section className="chat" aria-label="Fleet Recon chat">
         {!empty && (
           <div className="chat__toolbar">
             <span className="text-xs text-tertiary">
-              {entries.length} {entries.length === 1 ? 'request' : 'requests'} in this session
+              {entries.length} {entries.length === 1 ? 'message' : 'messages'} this session
             </span>
             <button
               type="button"
               className="btn btn--ghost btn--sm"
               onClick={() => {
                 clearThread();
-                toast.info('Session cleared', 'Local thread and canvas rows were reset.');
+                toast.info('New conversation', 'The thread was reset.');
               }}
             >
-              <Icon name="trash" size={14} /> Clear
+              <Icon name="trash" size={14} /> New chat
             </button>
           </div>
         )}
@@ -122,11 +89,10 @@ export function ChatView({ canvasOpen, onOpenCanvas, onCloseCanvas }: ChatViewPr
               <span className="chat__welcome-mark">
                 <Icon name="sparkle" size={22} />
               </span>
-              <h2>What should we reconcile?</h2>
+              <h2>What are you working on?</h2>
               <p>
-                Paste usernames straight into the box below, or describe what you are investigating.
-                Fleet Recon routes small lookups to the micro-query path and larger lists to batch
-                automation.
+                Ask like you would Claude — a device lookup, a batch asset report, a ticket search.
+                Every MCP tool you have configured is already attached.
               </p>
               <div className="chat__suggestions">
                 {SUGGESTIONS.map((suggestion) => (
@@ -144,21 +110,17 @@ export function ChatView({ canvasOpen, onOpenCanvas, onCloseCanvas }: ChatViewPr
                   </button>
                 ))}
               </div>
+              <p className="chat__disclosure">
+                This thread is kept only in your browser for this session — closing the tab clears
+                it. There is no server-side audit log.
+              </p>
             </div>
           ) : (
             <div className="chat__thread">
               {entries.map((entry) => (
                 <div key={entry.id} className="chat__turn">
                   <UserMessage entry={entry} />
-                  <RunMessage
-                    entry={entry}
-                    workspaceId={workspaceId}
-                    onOpenCanvas={() => {
-                      onOpenCanvas();
-                      navigate(`/workspaces/${workspaceId}/canvas`);
-                    }}
-                    onStatusChange={(run) => updateEntry(entry.id, { run })}
-                  />
+                  <RunMessage entry={entry} onRunUpdate={(run) => updateEntry(entry.id, { run })} />
                 </div>
               ))}
               <div ref={bottomRef} />
@@ -166,14 +128,8 @@ export function ChatView({ canvasOpen, onOpenCanvas, onCloseCanvas }: ChatViewPr
           )}
         </div>
 
-        <Composer busy={busy} onSubmitText={handleText} onSubmitCsv={handleCsv} seed={seed} />
+        <Composer busy={busy} onSubmit={handleSubmit} seed={seed} />
       </section>
-
-      {canvasOpen && (
-        <aside className="chat__canvas" aria-label="Live canvas">
-          <CanvasPanel compact onClose={onCloseCanvas} />
-        </aside>
-      )}
     </div>
   );
 }
